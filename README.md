@@ -2,12 +2,12 @@
 
 This repository contains the dataset and source code accompanying the paper:
 
-**_Bilingual Target-Based Stock Sentiment Dataset for Thai and English Financial News with ICL-Based Evaluation_**  
+**_Thai-English Target-Based Stock Sentiment Dataset for Financial News with ICL-Based Evaluation_**  
 [To appear in: *Journal/Conference Name*, 2025]  
 (*Preprint and DOI will be released soon.*)
 
 **Note**: The dataset is also available on HuggingFace Datasets at:  
-[https://huggingface.co/datasets/DaNDeLioZ/Bilingual_StockTBSA]
+[[https://huggingface.co/datasets/DaNDeLioZ/Bilingual_StockTBSA](https://huggingface.co/datasets/airesearch/Bilingual_StockTBSA)]
 
 ## Abstract / Motivation
 
@@ -145,7 +145,7 @@ If you use this dataset or code, please consider citing:
           and Vorawathanabuncha, Jasarin},
           and Nutanong, Sarana},
           and Udomcharoenchaikit, Can},
-  title = {Bilingual Target-Based Stock Sentiment Dataset for Thai and English Financial News with ICL-Based Evaluation},
+  title = {Thai-English Target-Based Stock Sentiment Dataset for Financial News with ICL-Based Evaluation},
   year = {2025},
   howpublished = {\url{https://github.com/anonymous/tbsa-th}},
   note = {Preprint available soon}
