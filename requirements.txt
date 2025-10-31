@@ -1,0 +1,12 @@
+chromadb>=0.6.3                   # ChromaDB backend
+datasets>=3.3.2                   # Huggingface datasets
+evaluate>=0.4.3                   # Huggingface evaluate
+langchain>=0.3.20            
+langchain-chroma>=0.2.2           # Chroma vectorstore wrapper
+langchain-huggingface>=0.1.2      # Huggingface embedding binding
+langchain-openai>=0.3.8           # OpenAI chat model binding
+numpy>=1.26.4                         
+pandas>=1.5.3                          
+pythainlp>=5.1.0                      
+torch>=2.6.0                 
+transformers>=4.49.0         

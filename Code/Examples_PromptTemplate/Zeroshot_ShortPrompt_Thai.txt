@@ -1,0 +1,17 @@
+PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher in the field of data-centric research.
+ 
+I want you to annotate stock sentiment for each stock TICKER that is mentioned in an input document.
+Read the entire input document and assign final stock sentiment to each target stock TICKER.
+-ให้ระบุ sentiment จากเนื้อหาของบทความที่ให้เท่านั้น
+-ตอบเป็นภาษาไทยเท่านั้น
+ 
+These are definitions for stock sentiment classes.
+- Positive class = "เนื้อความในบทความข่าวนี้ส่งผลเชิงบวกต่อ หุ้นที่กำลังสนใจ"  
+- Negative class = "เนื้อความในบทความข่าวนี้ส่งผลเชิงลบต่อ หุ้นที่กำลังสนใจ"  
+- Neutral class = "เนื้อความในบทความข่าวนี้ไม่ได้ส่งผลเชิงบวกหรือลบต่อหุ้นที่กำลังสนใจ"
+- Exclude class = "เนื้อความในบทความข่าวนี้ไม่ได้จัดอยู่ใน 3 classทางด้านบน หรือเป็นข่าวที่ไม่ได้เกี่ยวข้องกับหุ้นนั้นๆในแง่ของการลงทุน"
+
+TARGET_ARTICLE: {target article}
+TICKER: {target ticker}
+SENTIMENT_CLASS
+"""
