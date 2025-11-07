@@ -147,7 +147,7 @@ If you use this dataset or code, please consider citing:
           and Udomcharoenchaikit, Can},
   title = {Thai-English Target-Based Stock Sentiment Dataset for Financial News with ICL-Based Evaluation},
   year = {2025},
-  howpublished = {\url{[https://github.com/anonymous/tbsa-th]}},
+  howpublished = {\url{https://github.com/vistec-AI/Bilingual_StockTBSA}},
   note = {Preprint available soon}
 }
 ```
