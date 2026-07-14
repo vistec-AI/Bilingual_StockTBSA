@@ -127,7 +127,7 @@ For real-world applications, users may need to perform their own ticker extracti
 
 ## Preparing the Dataset for Our Inference Code
 
-Our inference code (see inference_qwen.py) is designed to operate on the long format where each row represents a single (text, ticker) pair.
+Our inference code is designed to operate on the long format where each row represents a single (text, ticker) pair.
 
 Before running inference on the released dataset, you can convert the dataset to long format using the following code:
 
