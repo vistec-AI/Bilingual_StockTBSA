@@ -3,7 +3,7 @@
 This repository contains the dataset and source code accompanying the paper:
 
 **_Thai-English Target-Based Stock Sentiment Dataset for Financial News with ICL-Based Evaluation_**  
-[To appear in: *Journal/Conference Name*, 2025]  
+[To appear in: *Journal/Conference Name*, 2026]  
 (*Preprint and DOI will be released soon.*)
 
 **Note**: The dataset is also available on HuggingFace Datasets at:  
@@ -11,15 +11,23 @@ This repository contains the dataset and source code accompanying the paper:
 
 ## Abstract / Motivation
 
-This work introduces a new **bilingual Target-Based Sentiment Analysis (TBSA)** dataset focused on the stock market domain. We collected stock-related financial news from both Thai and international sources, totaling approximately 10,300 Thai and 10,120 English articles.
+This work introduces a new **bilingual Target-Based Sentiment Analysis (TBSA)** dataset focused on the stock market domain. We collected stock-related financial news from both Thai and international sources, totaling approximately 10,295 Thai and 10,104 English articles.
 
 Each sentence is annotated at the target (TICKER) level using one of six sentiment labels: `positive`, `negative`, `neutral`, `exclude`, `ambiguous`, and `not stock`.
 
-- The `ambiguous` class denotes unclear sentiment polarity but was excluded from modeling due to its rarity.
+- The `ambiguous` class denotes articles containing both positive and negative impacts on the target stock, making the overall sentiment direction unclear. We excluded this class from the experiments because it contains very few instances in the dataset.
 
 - The `not stock` class corresponds to ticker-like entities (e.g., indices or organizations) erroneously matched during the ticker extraction process. It is included in the dataset statistics for transparency but omitted from model training and evaluation.
 
+Note: For detailed definitions and annotation criteria for each sentiment class, please refer to our paper.
+
 We evaluate the dataset using both encoder-based model (e.g., XLM-RoBERTa-Longformer) and large language models (i.e., Qwen2.5-72B-Instruct, GPT4o, LLaMA-3.1-70B-Instruct).
+
+We evaluate the dataset using two categories of models:
+
+- Encoder-based models: XLM-RoBERTa-Longformer and mmBERT.
+
+- Large language models: Qwen2.5-72B-Instruct, Llama-3.1-70B-Instruct, DeepSeek-R1-Distill-Llama-70B, Gemma-4-31B-it, and GPT-4o.
 
 We hope this work will be useful for the development of future financial sentiment analysis datasets, as well as for designing effective prompts in financial NLP tasks.
 
@@ -32,28 +40,40 @@ We hope this work will be useful for the development of future financial sentime
 │   ├── English_Financial_TBSA_dataset.json         # JSON: English financial dataset 2018 - 2023   
 │   └── Tests_ForAnnotatorRecuitment/  
 │       └── Recruitment_Test.xlsx                   # A test used for annotator recruitment 
-│
 ├── Code/
 │   ├── Model_finetuning/              
 │   │   └── Encoder_finetuning.py       # Finetuning code for encoder models
 │   ├── Model_inference_Encoder
-│   │   ├── Encoder_inference.py        # Inference code for encoder models
+│   │   └── Encoder_inference.py        # Inference code for encoder models
 │   ├── Model_inference_LLM
-│   │   ├── Qwen_Zeroshot_Short_inference.py          # Zero-shot short prompt (Qwen2.5-72B-Instruct)
-│   │   ├── Qwen_Zeroshot_Long_inference.py           # Zero-shot long prompt (Qwen2.5-72B-Instruct)
-│   │   ├── Qwen_Fewshot_Vector_inference.py          # 3-shot long prompt with Vector retrieval method 
-│   │   ├── Qwen_Fewshot_BM25_inference.py            # 3-shot long prompt with BM25 retrieval method 
-│   │   ├── Qwen_Fewshot_Random_inference.py          # 3-shot long prompt with Random selecting method 
-│   │   ├── Qwen_Fewshot_Hardcases_inference.py       # 6-shot long prompt with Hard cases 
-│   │   ├── GPT4o_Zeroshot_Short_inference.py         # Inference code for GPT4o model
-│   │   ├── GPT4o_Zeroshot_Long_inference.py          
-│   │   ├── GPT4o_Fewshot_Vector_inference.py        
-│   │   ├── GPT4o_Fewshot_BM25_inference.py          
-│   │   ├── GPT4o_Fewshot_Random_inference.py       
-│   │   └── GPT4o_Fewshot_Hardcases_inference.py     
-│   ├── Examples_PromptTemplate/                      # Example of ICL prompt template
-│   ├── Prepare_VectorDatabase/         
-│   │   └── Prepare_VectorDatabase.py                 # Prepare vector database for few-shot retrieval
+│   │   ├── Qwen_Model                  # Inference codes for Qwen2.5-72B-Instruct model
+│   │   |   ├──Qwen_Zeroshot_Short_inference.py          # Zero-shot short prompt 
+│   │   |   ├──Qwen_Zeroshot_Long_inference.py           # Zero-shot long prompt 
+│   │   |   ├──Qwen_Fewshot_Vector_inference.py          # 3-shot long prompt with Vector retrieval method 
+│   │   |   ├──Qwen_Fewshot_BM25_inference.py            # 3-shot long prompt with BM25 retrieval method 
+│   │   |   ├──Qwen_Fewshot_Random_inference.py          # 3-shot long prompt with Random selecting method
+│   │   |   ├──Qwen_Fewshot_Hybrid_inference.py          # 3-shot long prompt with Hybrid retrieval method 
+│   │   |   └──Qwen_Fewshot_Hardcases_inference.py       # 6-shot long prompt with Hard cases
+│   │   ├── Llama_Model                  # Inferenc codes for Llama-3.1-70B-Instruct model
+│   │   |   └── ...          
+│   │   ├── Deepseek_Model               # Inferenc codes for DeepSeek-R1-Distill-Llama-70B model
+│   │   |   └── ...          
+│   │   ├── Gemma4_Model                 # Inferenc codes for Gemma-4-31B-it model
+│   │   |   └── ...         
+│   │   ├── GPT4o_Model                  # Inferenc codes for GPT4o model
+│   │   |   └── ...     
+│   ├── Prompt_Template/                 # Tempalte for ICL setting
+│   ├── Prepare_RetrievedDocuments/         
+│   │   |── Prepare_VectorDatabase.py                        # Prepare vector database for a vector retrieval method
+|   |   |── Prepare_RetrievedDocument_FromVectorRetriever    # Prepare documents retrieved by a vector retriever
+|   |   |── Prepare_RetrievedDocument_FromBM25Retriever      # Prepare documents retrieved by a BM25 retriever
+|   |   |── Prepare_RetrievedDocument_FromRandomRetriever    # Prepare documents retrieved by Random sampling
+|   |   └── Prepare_RetrievedDocument_FromHybridRetriever    # Prepare documents retrieved by a hybrid retriever
+|   ├── VLLM-Docker-Deployment            # Docker deployment scripts and configurations for vLLM.
+│   │   |── deploy-qwen25-vllm.sh         # Deploy Qwen2.5-72B-Instruct with vLLM using Docker
+│   │   |── deploy-llama31-vllm.sh        # Deploy Llama-3.1-70B-Instruct with vLLM using Docker
+│   │   |── deploy-deepseekr1-vllm.sh     # Deploy DeepSeek-R1-Distill-Llama-70B with vLLM using Docker
+│   │   └── deploy-gemma4-vllm.sh         # Deploy Gemma-4-31B-it with vLLM using Docker
 │   └── requirements.txt
 └── README.md
 ```
@@ -65,7 +85,7 @@ We hope this work will be useful for the development of future financial sentime
 
 - `Example_PromptTemplate/`  
   Includes example prompt templates used in different ICL scenarios, shown for clarity.  
-  The actual prompts used during inference are implemented in the code provided in `Model_inference_LLM/`.
+  The actual prompts (with real ICL examples) used during inference are implemented in the code provided in `Model_inference_LLM/`.
 
 ## Dataset Format
 
@@ -79,8 +99,8 @@ A list of target stock mentions and their corresponding sentiment labels
 
 ```json
 {
-  "Article_id": "1",
-  "Data-source": "Prachachat",
+  "Article_id": "2",
+  "Data-source": "Prachachat-Finance",
   "Date": "2018-01-03",
   "Year": 2018
   "Text": "PACE ออกหุ้นเพิ่มทุน PP จำนวน 400 ล้านหุ้น ให้ SCB มูลค่ารวม 204 ลบ. ผู้สื่อข่าวรายงานว่า บมจ.เพซ ดีเวลลอปเมนท์ คอร์ปอเรชั่น (PACE) ...",
@@ -110,27 +130,29 @@ In practical use, the model receives a (Text, Ticker) pair and predicts the sent
 In this released dataset, TICKERs have already been pre-extracted from each article to facilitate reproducible experiments.
 For real-world applications, users may need to perform their own ticker extraction step prior to sentiment inference.
 
-## Using with Our Inference Code
+## Preparing the Dataset for Our Inference Code
 
-Our provided inference code (see inference_qwen.py) is designed to operate on the long format where each row corresponds to a single (text, ticker) pair.
+Our inference code (see inference_qwen.py) is designed to operate on the long format where each row represents a single (text, ticker) pair.
 
-If you wish to use our code with the released dataset, you can convert the dataset to long format using the following snippet:
+Before running inference on the released dataset, you can convert the dataset to long format using the following code:
 
 ```
 import pandas as pd
 
 # Load wide-format dataset
-df = pd.read_json("Thai_Financial_TBSA_dataset.json")
+df = pd.read_json("Thai_Financial_TBSA_dataset_Updated.json")
 
 # Explode to long format
-df_long = df.explode("Target_sentiment")
-df_long["TICKER"] = df_long["Target_sentiment"].apply(lambda x: x["ticker"])
-df_long["Sentiment_class"] = df_long["Target_sentiment"].apply(lambda x: x["sentiment"])
-df_long = df_long.drop(columns=["targets"])
+df_long = df.explode("Ticker_sentiments")
+df_long["TICKER"] = df_long["Ticker_sentiments"].apply(lambda x: x["ticker"])
+df_long["Sentiment_class"] = df_long["Ticker_sentiments"].apply(lambda x: x["sentiment"])
+df_long = df_long.drop(columns=["Ticker_sentiments"])
+df_long
 ```
 
-
 ## Citation
+
+Citation information will be available soon.
 
 ```
 If you use this dataset or code, please consider citing:
@@ -153,5 +175,4 @@ If you use this dataset or code, please consider citing:
 ```
 
 ## Acknowledgement
-This research was supported in part by the Thailand Capital Market Development Fund (CMDF), the WangchanX Project, Siam Commercial Bank (SCB), SCB X Public Company Limited, and PTT Public Company Limited.
-We would like to thank Ms. Lalita Lowphansirikul for the preprocessed financial data and related codes for financial data collection. We also thank our data annotation partner, Wang: Data Market.
+We are grateful for computational resources supported by NSTDA Supercomputer center (ThaiSC) and the National e-Science Infrastructure Consortium for their support of computing facilities for this work. We would like to thank Ms. Lalita Lowphansirikul for the preprocessed financial data and related codes for financial data collection. We also thank our data annotation partner, Wang: Data Market.
