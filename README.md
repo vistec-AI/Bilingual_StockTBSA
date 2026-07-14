@@ -19,9 +19,7 @@ Each sentence is annotated at the target (TICKER) level using one of six sentime
 
 - The `not stock` class corresponds to ticker-like entities (e.g., indices or organizations) erroneously matched during the ticker extraction process. It is included in the dataset statistics for transparency but omitted from model training and evaluation.
 
-Note: For detailed definitions and annotation criteria for each sentiment class, please refer to our paper.
-
-We evaluate the dataset using both encoder-based model (e.g., XLM-RoBERTa-Longformer) and large language models (i.e., Qwen2.5-72B-Instruct, GPT4o, LLaMA-3.1-70B-Instruct).
+**Note**: For detailed definitions and annotation criteria for each sentiment class, please refer to our paper.
 
 We evaluate the dataset using two categories of models:
 
@@ -79,9 +77,6 @@ We hope this work will be useful for the development of future financial sentime
 ```
 
 **Note**:
-
-- `Model_inference_LLM/`  
-  Python codes for in-context learning (ICL) experiments with large language models (e.g., Qwen2.5-72B-Instruct, GPT4o, LLaMA-3.1-70B-Instruct). LLaMA model uses the same code as Qwen model, with only the model and tokenizer changed.
 
 - `Example_PromptTemplate/`  
   Includes example prompt templates used in different ICL scenarios, shown for clarity.  
