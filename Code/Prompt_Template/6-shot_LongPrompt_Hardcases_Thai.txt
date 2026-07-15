@@ -78,5 +78,5 @@ SENTIMENT_CLASS: exclude
 
 TARGET_ARTICLE: {target article}
 TICKER: {target ticker}
-SENTIMENT_CLASS
+SENTIMENT_CLASS:
 """

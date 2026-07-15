@@ -60,5 +60,5 @@ SENTIMENT_CLASS: Sentiment of the article_C
 
 TARGET_ARTICLE: {target article}
 TICKER: {target ticker}
-SENTIMENT_CLASS
+SENTIMENT_CLASS:
 """
