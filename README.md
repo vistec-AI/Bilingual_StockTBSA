@@ -72,7 +72,7 @@ We hope this work will be useful for the development of future financial sentime
 │   │   |── deploy-llama31-vllm.sh        # Deploy Llama-3.1-70B-Instruct with vLLM using Docker
 │   │   |── deploy-deepseekr1-vllm.sh     # Deploy DeepSeek-R1-Distill-Llama-70B with vLLM using Docker
 │   │   └── deploy-gemma4-vllm.sh         # Deploy Gemma-4-31B-it with vLLM using Docker
-│   └── requirements.txt
+├── requirements.txt
 └── README.md
 ```
 
