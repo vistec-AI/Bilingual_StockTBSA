@@ -1,25 +1,25 @@
 """
-Encoder-based fine-tuning script for Stock TBSA (Target-Based Sentiment Analysis)
+Encoder-based fine-tuning code for Stock TBSA (Target-Based Sentiment Analysis).
 
-This script fine-tunes XLM-RoBERTa-Longformer on a 4-class TBSA dataset
-(Thai/English/Multilingual) using the HuggingFace Trainer API.
+This code fine-tunes XLM-RoBERTa-Longformer or mmBERT on a four-class
+TBSA dataset using the Hugging Face Trainer API.
 """
 
 # -----------------------------
-# Standard library imports
+# Imports
 # -----------------------------
-import os
 import json
+import os
 import time
-from typing import Dict, Any
+from datetime import datetime
 
-# -----------------------------
-# Third-party imports
-# -----------------------------
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+import evaluate
 import numpy as np
 import pandas as pd
 import torch
-import evaluate
+import wandb
 from datasets import Dataset, DatasetDict
 from transformers import (
     AutoModelForSequenceClassification,
@@ -30,121 +30,168 @@ from transformers import (
 )
 
 # -----------------------------
-# GPU Device (explicit placement)
-# -----------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-# -----------------------------
 # Configuration
 # -----------------------------
 
+# Select the model:
+#   "xlm_roberta_longformer"
+#   "mmbert"
+MODEL_KEY = "xlm_roberta_longformer"
+
+MODEL_CONFIGS = {
+    "xlm_roberta_longformer": {
+        "model_name": "markussagen/xlm-roberta-longformer-base-4096",
+        "max_length": 4096,
+        "output_dir": "./output/xlm_roberta_longformer",
+        "wandb_project": "tbsa-xlm-roberta-longformer",
+        "model_kwargs": {},
+    },
+    "mmbert": {
+        "model_name": "jhu-clsp/mmBERT-base",
+        "max_length": 8192,
+        "output_dir": "./output/mmbert",
+        "wandb_project": "tbsa-mmbert",
+        "model_kwargs": {"reference_compile": False},
+    },
+}
+
+MODEL_CONFIG = MODEL_CONFIGS[MODEL_KEY]
+MODEL_NAME = MODEL_CONFIG["model_name"]
+MAX_LENGTH = MODEL_CONFIG["max_length"]
+OUTPUT_BASE_DIR = MODEL_CONFIG["output_dir"]
+WANDB_PROJECT = MODEL_CONFIG["wandb_project"]
+MODEL_KWARGS = MODEL_CONFIG["model_kwargs"]
+
 # Path to dataset folder (e.g., "./dataset/thai", "./dataset/english", etc.)
 DATA_DIR = "./dataset/thai"
+TRAIN_FILE = "Thai_train_4class.json"  # Training dataset
+VALIDATION_FILE = "Thai_validation_4class.json"  # Validation dataset
 
-# Path to output folder where results and model will be saved
-OUTPUT_BASE_DIR = "./output/thai_encoder"
-
-# Model checkpoint
-MODEL_NAME = "markussagen/xlm-roberta-longformer-base-4096"
-NUM_EPOCHS = 10  # Number of training epochs
-SEED = 42  # Random seed for reproducibility
+NUM_EPOCHS = 10
+SEED = 42
 
 # Sentiment label mappings
 LABEL2ID = {"neutral": 0, "positive": 1, "negative": 2, "exclude": 3}
-ID2LABEL = {v: k for k, v in LABEL2ID.items()}
+ID2LABEL = {value: key for key, value in LABEL2ID.items()}
+
+REMOVE_COLUMNS = [
+    "Article_ID",
+    "Text",
+    "TICKER",
+    "Data-Source",
+    "Date",
+    "Year",
+    "Sentiment_class",
+]
 
 
 # -----------------------------
-# Utility functions
+# Device setup
 # -----------------------------
-def load_dataset(path: str) -> Dataset:
-    """Load JSON dataset into HuggingFace Dataset."""
-    with open(path, "r", encoding="utf-8") as f:
-        data = [json.loads(line) for line in f]
-    return Dataset.from_pandas(pd.DataFrame(data))
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+print(f"Selected model: {MODEL_NAME}")
+
+if device.type == "cuda":
+    print(f"GPU Name: {torch.cuda.get_device_name(0)}")
 
 
-def compute_metrics(eval_pred: Any) -> Dict[str, float]:
-    """Compute classification metrics."""
+# -----------------------------
+# Dataset loading
+# -----------------------------
+def load_dataset(path):
+    with open(path, "r", encoding="utf-8") as file:
+        data = [json.loads(line) for line in file]
+
+    data = pd.DataFrame(data)
+    return Dataset.from_pandas(data)
+
+
+# -----------------------------
+# Evaluation metrics
+# -----------------------------
+def custom_metrics(eval_pred):
     metric_precision = evaluate.load("precision")
     metric_recall = evaluate.load("recall")
     metric_f1 = evaluate.load("f1")
-    metric_acc = evaluate.load("accuracy")
+    metric_accuracy = evaluate.load("accuracy")
 
     logits, labels = eval_pred
-    preds = np.argmax(logits, axis=-1)
+    predictions = np.argmax(logits, axis=-1)
 
     return {
         "precision": metric_precision.compute(
-            predictions=preds, references=labels, average="micro"
+            predictions=predictions,
+            references=labels,
+            average="micro",
         )["precision"],
         "recall": metric_recall.compute(
-            predictions=preds, references=labels, average="micro"
+            predictions=predictions,
+            references=labels,
+            average="micro",
         )["recall"],
         "f1_micro": metric_f1.compute(
-            predictions=preds, references=labels, average="micro"
+            predictions=predictions,
+            references=labels,
+            average="micro",
         )["f1"],
         "f1_macro": metric_f1.compute(
-            predictions=preds, references=labels, average="macro"
+            predictions=predictions,
+            references=labels,
+            average="macro",
         )["f1"],
-        "accuracy": metric_acc.compute(predictions=preds, references=labels)[
-            "accuracy"
-        ],
+        "accuracy": metric_accuracy.compute(
+            predictions=predictions,
+            references=labels,
+        )["accuracy"],
     }
 
 
 # -----------------------------
-# Main training function
+# Model training
 # -----------------------------
-def train_model(batch_size: int, learning_rate: float) -> None:
-    """Train model with specified batch size and learning rate."""
+def train_model(batch_size, learning_rate):
     run_name = f"BS{batch_size}_LR{str(learning_rate).replace('.', '')}"
     output_dir = os.path.join(OUTPUT_BASE_DIR, run_name)
-    os.makedirs(output_dir, exist_ok=True)
 
-    # Tokenizer & collator
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, model_max_length=4096)
+    wandb.init(project=WANDB_PROJECT, name=run_name, reinit=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_NAME,
+        model_max_length=MAX_LENGTH,
+    )
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    def preprocess(examples):
-        return tokenizer(examples["Text"], examples["TICKER"], truncation=True)
+    def preprocess_function(examples):
+        return tokenizer(
+            examples["Text"],
+            examples["TICKER"],
+            truncation=True,
+        )
 
-    def add_label(examples):
-        return {"label": [LABEL2ID[label] for label in examples["Sentiment_class"]]}
+    def create_label(examples):
+        return [int(LABEL2ID[label]) for label in examples["Sentiment_class"]]
 
-    # NOTE:
-    # The released dataset is provided as a single JSONL file in wide format.
-    # You are expected to perform your own data splitting as needed.
-    # For example, in our published experiments, we use a temporal split:
-    #   - Train:      2018–2020
-    #   - Validation: 2021
-    #   - Test:       2022–2023
-    # Below is just an example assuming you have already created split files.
+    train = load_dataset(os.path.join(DATA_DIR, TRAIN_FILE))
+    validation = load_dataset(os.path.join(DATA_DIR, VALIDATION_FILE))
 
-    train_path = os.path.join(DATA_DIR, "Thai_train_4class.json")
-    val_path = os.path.join(DATA_DIR, "Thai_val_4class.json")
-
-    train_dataset = load_dataset(train_path)
-    val_dataset = load_dataset(val_path)
-    datasets = DatasetDict({"train": train_dataset, "validation": val_dataset})
-
-    datasets = datasets.map(preprocess, batched=True)
-    datasets = datasets.map(
-        add_label,
-        batched=True,
-        remove_columns=[
-            "Article_ID",
-            "Text",
-            "TICKER",
-            "Data-Source",
-            "Date",
-            "Year",
-            "Sentiment_class",
-        ],
+    datasets = DatasetDict(
+        {
+            "train": train,
+            "validation": validation,
+        }
     )
 
-    # Training args
+    datasets = datasets.map(
+        preprocess_function,
+        batched=True,
+    )
+    datasets = datasets.map(
+        lambda examples: {"label": create_label(examples)},
+        batched=True,
+        remove_columns=REMOVE_COLUMNS,
+    )
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=NUM_EPOCHS,
@@ -157,62 +204,69 @@ def train_model(batch_size: int, learning_rate: float) -> None:
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
+        report_to="wandb",
         seed=SEED,
         learning_rate=learning_rate,
         weight_decay=0.01,
         warmup_ratio=0.1,
-        report_to="none",  # Set to "wandb" if you integrate with Weights & Biases
     )
 
-    # Model
     model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_NAME, num_labels=len(LABEL2ID)
+        MODEL_NAME,
+        num_labels=4,
+        **MODEL_KWARGS,
     ).to(device)
+
     model.config.id2label = ID2LABEL
     model.config.label2id = LABEL2ID
 
-    # Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=datasets["train"],
         eval_dataset=datasets["validation"],
-        compute_metrics=compute_metrics,
+        compute_metrics=custom_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
 
-    print(f"Starting training: {run_name}")
-    start_time = time.time()
+    # Train the model and measure training time.
+    train_start_time = time.time()
+    train_start_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     trainer.train()
 
-    end_time = time.time()
-    elapsed = end_time - start_time
+    train_end_time = time.time()
+    train_end_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    train_elapsed_time = train_end_time - train_start_time
 
-    # Save training time
-    result_path = os.path.join(output_dir, "training_results.txt")
-    with open(result_path, "w", encoding="utf-8") as f:
-        f.write(
-            f"Total training time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)\n"
+    wandb.finish()
+
+    # -----------------------------
+    # Save training information
+    # -----------------------------
+    results_path = os.path.join(output_dir, "training_results.txt")
+
+    with open(results_path, "w", encoding="utf-8") as file:
+        file.write(f"Model: {MODEL_NAME}\n")
+        file.write("Training Time:\n")
+        file.write(f"Start Time: {train_start_datetime}\n")
+        file.write(f"End Time: {train_end_datetime}\n")
+        file.write(
+            f"Total Training Time: {train_elapsed_time:.2f} seconds "
+            f"({train_elapsed_time / 60:.2f} minutes)\n\n"
         )
 
-    print(f" Training complete. Results saved to: {result_path}")
+    print(f"Results saved in {results_path}")
 
-
-# NOTE:
-# We track performance (loss/F1/etc.) using wandb during training.
-# The best checkpoint is restored via `load_best_model_at_end=True` based on validation loss.
-# No metrics are saved to disk directly in this script.
-# You can manually select the best checkpoint (based on wandb logs) for downstream inference or analysis.
 
 # -----------------------------
-# Run all combinations
+# Hyperparameter search
 # -----------------------------
 if __name__ == "__main__":
     batch_sizes = [8, 16, 32]
     learning_rates = [3e-4, 3e-5, 3e-6, 4e-4, 4e-5, 4e-6, 5e-4, 5e-5, 5e-6]
 
-    for bs in batch_sizes:
-        for lr in learning_rates:
-            train_model(bs, lr)
+    for batch_size in batch_sizes:
+        for learning_rate in learning_rates:
+            train_model(batch_size, learning_rate)
