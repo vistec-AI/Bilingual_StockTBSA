@@ -3,7 +3,7 @@ PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher 
 I want you to annotate stock sentiment for each stock TICKER that is mentioned in an input document.
 Read the entire input document and assign final stock sentiment to each target stock TICKER.
 -Sentiment must be determined solely based on the content of the given document.
--Respond only in English.
+-Respond only in Thai.
  
 These are definitions for stock sentiment classes.
 - Positive class = "The content of this news article has a positive impact on the target stock."
