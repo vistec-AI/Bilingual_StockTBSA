@@ -60,7 +60,7 @@ We hope this work will be useful for the development of future financial sentime
 │   │   |   └── ...         
 │   │   ├── GPT4o_Model                  # Inferenc codes for GPT4o model
 │   │   |   └── ...     
-│   ├── Prompt_Template/                 # Tempalte for ICL setting
+│   ├── Example_PromptTemplates/                 # Examples of ICL prompts in our experiments
 │   ├── Prepare_RetrievedDocuments/         
 │   │   |── Prepare_VectorDatabase.py                        # Prepare vector database for a vector retrieval method
 |   |   |── Prepare_RetrievedDocument_FromVectorRetriever    # Prepare documents retrieved by a vector retriever
@@ -78,9 +78,9 @@ We hope this work will be useful for the development of future financial sentime
 
 **Note**:
 
-- `Example_PromptTemplate/`  
-  Includes example prompt templates used in different ICL scenarios, shown for clarity.  
-  The actual prompts (with real ICL examples) used during inference are implemented in the code provided in `Model_inference_LLM/`.
+- `Example_PromptTemplates/`
+  Contains illustrative prompt templates for different in-context learning (ICL) settings.
+  The actual prompts, including the retrieved ICL examples, are generated during inference by the code in `Model_inference_LLM/`.  
 
 ## Dataset Format
 
