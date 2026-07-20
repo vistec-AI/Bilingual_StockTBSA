@@ -63,10 +63,10 @@ We hope this work will be useful for the development of future financial sentime
 │   ├── Example_PromptTemplates/                 # Examples of ICL prompts in our experiments
 │   ├── Prepare_RetrievedDocuments/         
 │   │   |── Prepare_VectorDatabase.py                        # Prepare vector database for a vector retrieval method
-|   |   |── Prepare_RetrievedDocument_FromVectorRetriever    # Prepare documents retrieved by a vector retriever
-|   |   |── Prepare_RetrievedDocument_FromBM25Retriever      # Prepare documents retrieved by a BM25 retriever
-|   |   |── Prepare_RetrievedDocument_FromRandomRetriever    # Prepare documents retrieved by Random sampling
-|   |   └── Prepare_RetrievedDocument_FromHybridRetriever    # Prepare documents retrieved by a hybrid retriever
+|   |   |── Prepare_RetrievedDocument_FromVectorRetriever.py    # Prepare documents retrieved by a vector retriever
+|   |   |── Prepare_RetrievedDocument_FromBM25Retriever.py      # Prepare documents retrieved by a BM25 retriever
+|   |   |── Prepare_RetrievedDocument_FromRandomRetriever.py    # Prepare documents retrieved by Random sampling
+|   |   └── Prepare_RetrievedDocument_FromHybridRetriever.py    # Prepare documents retrieved by a hybrid retriever
 |   ├── VLLM-Docker-Deployment            # Docker deployment scripts and configurations for vLLM.
 │   │   |── deploy-qwen25-vllm.sh         # Deploy Qwen2.5-72B-Instruct with vLLM using Docker
 │   │   |── deploy-llama31-vllm.sh        # Deploy Llama-3.1-70B-Instruct with vLLM using Docker
