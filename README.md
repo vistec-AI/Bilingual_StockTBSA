@@ -44,20 +44,16 @@ We hope this work will be useful for the development of future financial sentime
 │   ├── Model_inference_Encoder
 │   │   └── Encoder_inference.py        # Inference code for encoder models
 │   ├── Model_inference_LLM
-│   │   ├── Qwen_Model                  # Inference codes for Qwen2.5-72B-Instruct model
+│   │   ├── Qwen_Model                  # Inference codes for Qwen2.5-72B-Instruct model (These codes are also used for Llama and Gemma)
 │   │   |   ├──Qwen_Zeroshot_Short_inference.py          # Zero-shot short prompt 
 │   │   |   ├──Qwen_Zeroshot_Long_inference.py           # Zero-shot long prompt 
 │   │   |   ├──Qwen_Fewshot_Vector_inference.py          # 3-shot long prompt with Vector retrieval method 
 │   │   |   ├──Qwen_Fewshot_BM25_inference.py            # 3-shot long prompt with BM25 retrieval method 
 │   │   |   ├──Qwen_Fewshot_Random_inference.py          # 3-shot long prompt with Random selecting method
 │   │   |   ├──Qwen_Fewshot_Hybrid_inference.py          # 3-shot long prompt with Hybrid retrieval method 
-│   │   |   └──Qwen_Fewshot_Hardcases_inference.py       # 6-shot long prompt with Hard cases
-│   │   ├── Llama_Model                  # Inferenc codes for Llama-3.1-70B-Instruct model
-│   │   |   └── ...          
+│   │   |   └──Qwen_Fewshot_Hardcases_inference.py       # 6-shot long prompt with Hard cases     
 │   │   ├── Deepseek_Model               # Inferenc codes for DeepSeek-R1-Distill-Llama-70B model
 │   │   |   └── ...          
-│   │   ├── Gemma4_Model                 # Inferenc codes for Gemma-4-31B-it model
-│   │   |   └── ...         
 │   │   ├── GPT4o_Model                  # Inferenc codes for GPT4o model
 │   │   |   └── ...     
 │   ├── Example_PromptTemplates/                 # Examples of ICL prompts in our experiments
