@@ -1,18 +1,18 @@
 """
-LLM-based few-shot batch inference script with pre-retrieved BM25 examples
+LLM-based few-shot batch inference script with pre-retrieved hybrid examples
 for Stock TBSA (Target-Based Sentiment Analysis)
 
 This script performs few-shot batch inference using a large language model
 (LLM), such as Qwen2.5-72B-Instruct.
 
-Similar examples are retrieved beforehand using BM25 and saved in a CSV file.
-The script combines these examples with each target article, performs
-sentiment classification, and saves the predicted labels and total
-inference time.
+Similar examples are retrieved beforehand using a hybrid retrieval method
+and saved in a CSV file. The script uses the first three retrieved examples
+for each target article, performs sentiment classification, and saves the
+predicted labels and total inference time.
 """
 
 # -----------------------------
-#  Library imports
+# Library imports
 # -----------------------------
 import ast
 import time
@@ -31,7 +31,7 @@ from langchain_openai import ChatOpenAI
 # NOTE:
 # - This is the long English prompt for few-shot inference.
 # - A Thai version is available at: `Code/Prompt_Template/Zeroshot_LongPrompt_Thai.txt`
-# - The few-shot examples were retrieved beforehand using BM25 .
+# - The few-shot examples were retrieved beforehand using a hybrid retriever.
 # - The model must classify each target stock into one of four classes:
 #   Positive, Negative, Neutral, or Exclude.
 
@@ -92,8 +92,7 @@ Annotation rules:
 # Replace these example values with the paths and server configuration
 # in your environment.
 
-RETRIEVED_DOCS_PATH = "./path/to/bm25_retrieved_documents.csv"  # Replace with path of retrieved ICL examples
-TEST_JSON_PATH = "./path/to/test_data.json"  # Replace with your test set path
+RETRIEVED_DOCS_PATH = "./path/to/hybrid_retrieved_documents.csv"  # Replace with path of retrieved ICL examples
 
 SAVE_JSON_PATH = "./path/to/output_predictions.jsonl"  # Predicion output
 INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # Inference time log
@@ -123,9 +122,12 @@ def to_list_if_string(x):
 
 
 def build_final_prompt(row):
-    """Combine retrieved BM25 examples with the target TBSA instance."""
+    """Combine retrieved examples with the target TBSA instance."""
 
-    examples = to_list_if_string(row["BM25_Example"])
+    examples = to_list_if_string(row["retrieved_document"])
+
+    # Use only the first three retrieved examples for 3-shot inference.
+    examples = examples[:3]
 
     examples_text = "\n\n".join(str(example).strip() for example in examples)
 
@@ -250,34 +252,19 @@ def run_batch_inference(
 
 
 # -----------------------------
-# Load test data and retrieved examples
+# Load pre-retrieved hybrid examples
 # -----------------------------
-# BM25 retrieval was performed beforehand using:
-# "Code/Prepare_RetrievedDocuments/Prepare_RetrievedDocument_FromBM25Retriever.py"
+# Hybrid retrieval was performed beforehand, and the retrieved examples were saved in a CSV file.
+# "Code/Prepare_RetrievedDocuments/Prepare_RetrievedDocument_FromHybridRetriever.py"
 #
-# This script loads the pre-retrieved examples from the generated CSV file.
+# This script loads the pre-retrieved examples from the generated CSV file
+# and does not run the hybrid retrieval process again.
 
-print("Loading BM25-retrieved examples...")
+print("Loading hybrid-retrieved examples...")
 
-bm25_retrieved_docs = pd.read_csv(
+retrieve_df = pd.read_csv(
     RETRIEVED_DOCS_PATH,
 )
-
-print("Loading test set...")
-
-df_test = pd.read_json(
-    TEST_JSON_PATH,
-    lines=True,
-)
-
-
-# -----------------------------
-# Align retrieved examples with test instances
-# -----------------------------
-df_test = df_test.reset_index(drop=True)
-bm25_retrieved_docs = bm25_retrieved_docs.reset_index(drop=True)
-
-df_test["BM25_Example"] = bm25_retrieved_docs["retrieved_document"]
 
 
 # -----------------------------
@@ -285,14 +272,12 @@ df_test["BM25_Example"] = bm25_retrieved_docs["retrieved_document"]
 # -----------------------------
 print("Constructing few-shot prompts...")
 
-df_test = df_test.copy()
-
-df_test["input_prompt"] = df_test.apply(
+retrieve_df["input_prompt"] = retrieve_df.apply(
     build_final_prompt,
     axis=1,
 )
 
-df_test["final_prompt"] = PROMPT_TEMPLATE + df_test["input_prompt"].astype(str)
+retrieve_df["final_prompt"] = PROMPT_TEMPLATE + retrieve_df["input_prompt"].astype(str)
 
 
 # -----------------------------
@@ -310,8 +295,8 @@ print("Starting batch inference...")
 
 inference_start_time = time.time()
 
-df_test["AI"] = run_batch_inference(
-    df=df_test,
+retrieve_df["AI"] = run_batch_inference(
+    df=retrieve_df,
     structured_llm=structured_llm,
     prompt_col="final_prompt",
     batch_size=BATCH_SIZE,
@@ -340,11 +325,11 @@ with open(
 # -----------------------------
 # Extract output fields
 # -----------------------------
-df_test["AI_sentiment"] = df_test["AI"].apply(
+retrieve_df["AI_sentiment"] = retrieve_df["AI"].apply(
     lambda x: (x.get("sentiment") if isinstance(x, dict) else np.nan)
 )
 
-df_test["AI_reason"] = df_test["AI"].apply(
+retrieve_df["AI_reason"] = retrieve_df["AI"].apply(
     lambda x: (x.get("reason") if isinstance(x, dict) else np.nan)
 )
 
@@ -352,11 +337,11 @@ df_test["AI_reason"] = df_test["AI"].apply(
 # -----------------------------
 # Save inference results
 # -----------------------------
-df_test.to_json(
+retrieve_df.to_json(
     SAVE_JSON_PATH,
     orient="records",
     lines=True,
     force_ascii=False,
 )
 
-print("BM25 few-shot batch inference completed and results saved.")
+print("Hybrid few-shot batch inference completed and results saved.")

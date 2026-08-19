@@ -1,93 +1,95 @@
 """
-LLM-based zero-shot inference script for Stock TBSA (Target-Based Sentiment Analysis)
+LLM-based zero-shot batch inference script for Stock TBSA
+(Target-Based Sentiment Analysis)
 
-This script performs zero-shot inference using a large language model (LLM)
-(e.g., Qwen2.5-72B-Instruct) on a TBSA test set and outputs predicted sentiment labels.
+This script performs zero-shot inference in batches using a large language
+model (LLM), such as Qwen2.5-72B-Instruct, on a Stock TBSA test set.
+
+The script outputs predicted sentiment labels and records the total
+inference time.
 """
 
 # -----------------------------
-# Standard library imports
+# Library imports
 # -----------------------------
-import os
 import time
-import json
-from typing import List
-
-# -----------------------------
-# Third-party imports
-# -----------------------------
+from typing import Literal
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 from tqdm import tqdm
-from enum import Enum, EnumMeta
-from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 
+# -----------------------------
+# Prompt template
+# -----------------------------
+# NOTE:
+# - This is the short prompt version in English.
+# - A Thai version is available at: `Code/Prompt_Template/Zeroshot_ShortPrompt_Thai.txt`
+# - The model must classify each target stock into one of four classes:
+#   Positive, Negative, Neutral, or Exclude.
 
-# -----------------------------
-# Prompt template and label enums
-# -----------------------------
-# 🔹NOTE:
-# - This is the short prompt version in English used for inference.
-# - A Thai version is available at: `Code/Examples_PromptTemplate/Zeroshot_ShortPrompt_Thai.txt`
 
 PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher in the field of data-centric research.
-
+ 
 I want you to annotate stock sentiment for each stock TICKER that is mentioned in an input document.
 Read the entire input document and assign final stock sentiment to each target stock TICKER.
-- Sentiment must be determined solely based on the content of the given document.
-- Respond only in English.
-
-These are definitions for stock sentiment classes:
-- Positive = "The content of this news article has a positive impact on the target stock."
-- Negative = "The content of this news article has a negative impact on the target stock."
-- Neutral = "The content of this news article has neither a positive nor negative impact on the target stock."
-- Exclude = "The content of this news article does not fall into the above three classes or is unrelated to the target stock in terms of investment."
+-Sentiment must be determined solely based on the content of the given document.
+-Respond only in English.
+ 
+These are definitions for stock sentiment classes.
+- Positive class = "The content of this news article has a positive impact on the target stock."
+- Negative class = "The content of this news article has a negative impact on the target stock."
+- Neutral class = "The content of this news article has neither a positive nor negative impact on the target stock."
+- Exclude class = "The content of this news article does not fall into the above three classes or is unrelated to the target stock in terms of investment."
 
 TARGET_ARTICLE: {doc}
 TICKER: {tags}
 SENTIMENT_CLASS: 
 """
 
-# -----------------------------
-# Configuration (replace with your actual paths)
-# -----------------------------
-TEST_JSON_PATH = "./path/to/test_data.json"  # <-- Replace with your test set path
-SAVE_JSON_PATH = "./path/to/output_predictions.json"  # <-- Output predictions
-INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # <-- Output timing info
 
-MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # can change to other LLM such as "meta-llama/Llama-3.1-70B-Instruct"
-API_KEY = "EMPTY"  # <-- Replace with your actual API key
-API_BASE = "https://your-inference-endpoint.com/v1"  # <-- Replace with your API base
+# -----------------------------
+# Configuration
+# -----------------------------
+# Replace these example paths with the paths in your environment.
+
+TEST_JSON_PATH = "./path/to/test_data.json"  # Replace with your test set path
+SAVE_JSON_PATH = "./path/to/output_predictions.jsonl"  # Predicion output
+INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # Inference time log
+
+MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # you can change to other LLMs
+API_KEY = "EMPTY"  # Replace with your actual API key
+API_BASE = "http://your-vllm-server:8000/v1"  # Replace with your API base
 TEMPERATURE = 0.0
 
-
-class EnumDirectValueMeta(EnumMeta):
-    def __getattribute__(cls, name):
-        value = super().__getattribute__(name)
-        if isinstance(value, cls):
-            value = value.value
-        return value
+BATCH_SIZE = 50
+MAX_CONCURRENCY = 8
 
 
-class SentimentType(Enum, metaclass=EnumDirectValueMeta):
-    NEGATIVE = "negative"
-    NEUTRAL = "neutral"
-    POSITIVE = "positive"
-    EXCLUDE = "exclude"
-
-
+# -----------------------------
+# Structured output schema
+# -----------------------------
 class Sentiment(BaseModel):
-    sentiment: List[SentimentType]
-    # reason: Optional[str] = Field(description="Justification for the label")  # Optional if needed
+    sentiment: Literal[
+        "negative",
+        "neutral",
+        "positive",
+        "exclude",
+    ]
 
 
 # -----------------------------
 # Helper functions
 # -----------------------------
 def create_prompt(doc: str, tags: str) -> str:
-    return PROMPT_TEMPLATE.format(doc=doc, tags=tags)
+    """Create a zero-shot TBSA prompt for one target instance."""
+
+    return PROMPT_TEMPLATE.format(
+        doc=doc,
+        tags=tags,
+    )
 
 
 def create_binding(
@@ -96,55 +98,139 @@ def create_binding(
     model_name: str = MODEL_NAME,
     temperature: float = TEMPERATURE,
 ) -> RunnableBinding:
+    """Create an LLM binding with structured sentiment output."""
+
     llm = ChatOpenAI(
         openai_api_key=api_key,
         openai_api_base=api_base,
         model_name=model_name,
         temperature=temperature,
     )
+
     return llm.with_structured_output(Sentiment)
 
 
-def create_output(structured_llm: RunnableBinding, prompt: str) -> dict[str, str]:
+def parse_output(res):
+    """Parse a structured LLM response or a returned exception."""
+
     try:
-        res = structured_llm.invoke(prompt)
-        sentiment = res.sentiment[0].value
-        return dict(sentiment=sentiment, reason=np.nan)
+        if isinstance(res, Exception):
+            return {
+                "sentiment": np.nan,
+                "reason": str(res),
+            }
+
+        sentiment = res.sentiment
+
+        if sentiment not in {
+            "negative",
+            "neutral",
+            "positive",
+            "exclude",
+        }:
+            return {
+                "sentiment": np.nan,
+                "reason": f"invalid sentiment: {sentiment}",
+            }
+
+        return {
+            "sentiment": sentiment,
+            "reason": np.nan,
+        }
+
     except Exception as e:
-        print(e)
-        return np.nan
+        print("Parse error:", e)
+
+        return {
+            "sentiment": np.nan,
+            "reason": str(e),
+        }
+
+
+def run_batch_inference(
+    df: pd.DataFrame,
+    structured_llm: RunnableBinding,
+    batch_size: int = BATCH_SIZE,
+    max_concurrency: int = MAX_CONCURRENCY,
+):
+    """Run zero-shot LLM inference in batches."""
+
+    outputs = []
+
+    for start in tqdm(
+        range(0, len(df), batch_size),
+        desc="Running batch inference",
+    ):
+        end = start + batch_size
+        batch_df = df.iloc[start:end]
+
+        prompts = [
+            create_prompt(row["Text"], row["TICKER"]) for _, row in batch_df.iterrows()
+        ]
+
+        results = structured_llm.batch(
+            prompts,
+            config={"max_concurrency": max_concurrency},
+            return_exceptions=True,
+        )
+
+        batch_outputs = [parse_output(res) for res in results]
+        outputs.extend(batch_outputs)
+
+    return outputs
 
 
 # -----------------------------
 # Load test set
 # -----------------------------
 print("Loading test set...")
-df = pd.read_json(TEST_JSON_PATH, lines=True)  # Import testing set
 
-# -----------------------------
-# Prepare LLM and Inference
-# -----------------------------
-print("Starting LLM inference...")
-structured_llm = create_binding()
-tqdm.pandas()
-
-start_time = time.time()
-
-df["AI"] = df.progress_apply(
-    lambda x: create_output(structured_llm, create_prompt(x["Text"], x["TICKER"])),
-    axis=1,
+df = pd.read_json(
+    TEST_JSON_PATH,
+    lines=True,
 )
 
-end_time = time.time()
-elapsed = end_time - start_time
 
 # -----------------------------
-# Save timing info
+# Prepare LLM binding
 # -----------------------------
-with open(INFERENCE_TIME_LOG, "w") as f:
+print("Preparing LLM...")
+
+structured_llm = create_binding()
+
+
+# -----------------------------
+# Run batch inference
+# -----------------------------
+print("Starting batch inference...")
+
+inference_start_time = time.time()
+
+df["AI"] = run_batch_inference(
+    df=df,
+    structured_llm=structured_llm,
+    batch_size=BATCH_SIZE,
+    max_concurrency=MAX_CONCURRENCY,
+)
+
+inference_end_time = time.time()
+inference_elapsed_time = inference_end_time - inference_start_time
+
+
+# -----------------------------
+# Save inference timing
+# -----------------------------
+with open(
+    INFERENCE_TIME_LOG,
+    "w",
+    encoding="utf-8",
+) as f:
     f.write(
-        f"Total Inference Time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)\n\n"
+        f"Total Inference Time: "
+        f"{inference_elapsed_time:.2f} seconds "
+        f"({inference_elapsed_time / 60:.2f} minutes)\n\n"
     )
+
 
 # -----------------------------
 # Extract output fields
@@ -166,13 +252,23 @@ df[["AI_sentiment", "AI_reason"]] = df["AI"].apply(
             }
         )
         if isinstance(x, dict)
-        else pd.Series({"AI_sentiment": np.nan, "AI_reason": np.nan})
+        else pd.Series(
+            {
+                "AI_sentiment": np.nan,
+                "AI_reason": np.nan,
+            }
+        )
     )
 )
+
 
 # -----------------------------
 # Save output file
 # -----------------------------
-df.to_json(SAVE_JSON_PATH, orient="records", lines=True)
+df.to_json(
+    SAVE_JSON_PATH,
+    orient="records",
+    lines=True,
+)
 
-print("LLM inference completed and results saved.")
+print("Batch inference completed and results saved.")

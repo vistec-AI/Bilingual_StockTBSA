@@ -1,40 +1,39 @@
 """
-LLM-based inference script with vector retrieval for Stock TBSA (Target-Based Sentiment Analysis)
+LLM-based few-shot batch inference script with pre-retrieved vector examples
+for Stock TBSA (Target-Based Sentiment Analysis)
 
-This script performs few-shot inference using a large language model (LLM)
-(e.g., Qwen2.5-72B-Instruct) by retrieving similar examples from a vector store and constructing prompts for sentiment classification.
+This script performs few-shot batch inference using a large language model
+(LLM), such as Qwen2.5-72B-Instruct.
+
+Similar examples are assumed to have already been retrieved from a vector
+database and saved in a CSV file. The script combines these examples with
+each target article, performs sentiment classification, and saves the
+predicted labels and total inference time.
 """
 
 # -----------------------------
-# Standard library imports
+#  Library imports
 # -----------------------------
-import os
+import ast
 import time
-import json
-from typing import List
-
-# -----------------------------
-# Third-party imports
-# -----------------------------
+from typing import Literal
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 from tqdm import tqdm
-from enum import Enum, EnumMeta
-import chromadb
-from langchain_core.pydantic_v1 import BaseModel
+
 from langchain_core.runnables import RunnableBinding
-from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_openai import ChatOpenAI
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 
 # -----------------------------
 # Prompt template
 # -----------------------------
-# 🔹NOTE:
-# - This is the 3-shot English prompt with vector retrieval used for inference.
-# - A corresponding Thai version is available at:
-#   `Code/Examples_PromptTemplate/3-shot_LongPrompt_Thai.txt`
+# NOTE:
+# - This is the long English prompt for few-shot inference.
+# - A Thai version is available at: `Code/Prompt_Template/Zeroshot_LongPrompt_Thai.txt`
+# - The few-shot examples were retrieved beforehand from a vector database.
+# - The model must classify each target stock into one of four classes:
+#   Positive, Negative, Neutral, or Exclude.
 
 PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher in the field of data-centric research.
  
@@ -86,186 +85,280 @@ Annotation rules:
 
 """
 
-# -----------------------------
-# Configuration (replace with your actual paths)
-# -----------------------------
-DATASET_PATH = "./path/to/test_set.json"  # <-- Replace with your test set
-VECTOR_DB_PATH = "./path/to/vector_db"  # <-- Replace with "Vector Database" path
-OUTPUT_JSON_PATH = "./path/to/output_predictions.json"
-RETRIEVED_DOCS_PATH = "./path/to/retrieved_docs.csv"  # <-- Save retrieved documents
-INFERENCE_TIME_LOG = "./path/to/inference_time.txt"  # <-- Save timing information
 
-MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # can change to other LLM such as "meta-llama/Llama-3.1-70B-Instruct"
-API_KEY = "EMPTY"  # <-- Replace with your actual API key
-API_BASE = "https://your-inference-endpoint.com/v1"  # <-- Replace with your API base
+# -----------------------------
+# Configuration
+# -----------------------------
+# Replace these example values with the paths and server configuration
+# in your environment.
+
+RETRIEVED_DOCS_PATH = (
+    "./path/to/retrieved_documents.csv"  # Replace with path of retrieved ICL examples
+)
+TEST_JSON_PATH = "./path/to/test_data.json"  # Replace with your test set path
+
+SAVE_JSON_PATH = "./path/to/output_predictions.jsonl"  # Predicion output
+INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # Inference time log
+
+MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # you can change to other LLMs
+API_KEY = "EMPTY"  # Replace with your actual API key
+API_BASE = "http://your-vllm-server:8000/v1"  # Replace with your API base
 TEMPERATURE = 0.0
-TOP_K = 3  # <-- For 3-shot (change a number for n-shot)
 
-
-class EnumDirectValueMeta(EnumMeta):
-    def __getattribute__(cls, name):
-        value = super().__getattribute__(name)
-        if isinstance(value, cls):
-            value = value.value
-        return value
-
-
-class SentimentType(Enum, metaclass=EnumDirectValueMeta):
-    NEGATIVE = "negative"
-    NEUTRAL = "neutral"
-    POSITIVE = "positive"
-    EXCLUDE = "exclude"
-
-
-class Sentiment(BaseModel):
-    sentiment: List[SentimentType]
-    # reason: Optional[str] = Field(...)
+BATCH_SIZE = 50
+MAX_CONCURRENCY = 8
 
 
 # -----------------------------
-# Vector Retrieval Initialization
+# Prompt construction helpers
 # -----------------------------
-# IMPORTANT:
-# Before running this inference script, you must first build the vector database
-# using a representative sample pool (e.g., training + validation sets).
-# These samples will later serve as the source for few-shot example retrieval during inference.
-#
-# To create the vector database, please refer to:
-#     "Prepare_VectorDatabase/Prepare_VectorDatabase.py"
-#
-# Once the vector database has been created and persisted,
-# you can re-initialize the vector store using the function below
-# to enable document retrieval for constructing few-shot prompts.
+def to_list_if_string(x):
+    """Convert a stored list representation into a Python list."""
+
+    if isinstance(x, list):
+        return x
+
+    if isinstance(x, str):
+        return ast.literal_eval(x)
+
+    return []
 
 
-def initialize_vector_store(
-    model_name: str = "BAAI/bge-m3",
-    db_path: str = VECTOR_DB_PATH,
-    collection_name: str = "financial_collection",
-    collection_metadata={"hnsw:space": "cosine"},
-) -> Chroma:
-    embeddings = HuggingFaceEmbeddings(model_name=model_name, show_progress=False)
-    persistent_client = chromadb.PersistentClient(path=db_path)
-    vector_store = Chroma(
-        client=persistent_client,
-        collection_name=collection_name,
-        embedding_function=embeddings,
-        collection_metadata=collection_metadata,
-    )
-    return vector_store
+def build_final_prompt(row):
+    """Combine retrieved examples with the target TBSA instance."""
 
+    examples = to_list_if_string(row["Vector_Example"])
 
-# -----------------------------
-# Prompt Construction Helpers
-# -----------------------------
-FEW_SHOT_TEMPLATE = """EXAMPLE: {text}
-TICKER: {ticker}
-SENTIMENT_CLASS: {sentiment_class}
-"""
+    examples_text = "\n\n".join(str(example).strip() for example in examples)
 
-
-def prepare_queries(file_path: str) -> list[str]:
-    df = pd.read_json(file_path, lines=True)
-    df = pd.concat([df], ignore_index=True)
-    df["queries"] = (
+    target_text = (
         "TARGET_ARTICLE: "
-        + df["Text"]
+        + str(row["Text"]).strip()
         + "\n"
         + "TICKER: "
-        + df["TICKER"]
+        + str(row["TICKER"]).strip()
         + "\n"
         + "SENTIMENT_CLASS: "
     )
-    return df["queries"].tolist()
 
-
-def process_documents(
-    queries: List[str], retriever: VectorStoreRetriever, template: str
-) -> List[List[str]]:
-    searched_docs = [retriever.invoke(query) for query in tqdm(queries)]
-    results = []
-    for docs in searched_docs:
-        sub_prompts = [
-            template.format(
-                text=doc.page_content,
-                ticker=doc.metadata["ticker"],
-                sentiment_class=doc.metadata["sentiment-class"],
-            )
-            for doc in docs
-        ]
-        results.append(sub_prompts)
-    return results
-
-
-def create_prompts(queries: List[str], searched_docs: List[List[str]]) -> List[str]:
-    prompts = []
-    for i, doc in enumerate(searched_docs):
-        docs_text = "\n".join(d for d in doc)
-        prompts.append(docs_text + "\n" + queries[i])
-    return prompts
-
-
-def create_output(structured_llm: RunnableBinding, prompt: str) -> dict[str, str]:
-    try:
-        res = structured_llm.invoke(prompt)
-        sentiment = res.sentiment[0].value
-        return dict(sentiment=sentiment, reason=np.nan)
-    except Exception as e:
-        print(e)
-        return np.nan
+    return examples_text + "\n\n" + target_text
 
 
 # -----------------------------
-# Load test data and prepare prompts
+# Structured output schema
 # -----------------------------
-print("Initializing vector store and preparing prompts...")
-vector_store = initialize_vector_store()
-retriever = vector_store.as_retriever(search_kwargs={"k": TOP_K})
+class Sentiment(BaseModel):
+    sentiment: Literal[
+        "negative",
+        "neutral",
+        "positive",
+        "exclude",
+    ]
 
-queries = prepare_queries(DATASET_PATH)  # Testing set
-searched_docs = process_documents(queries, retriever, FEW_SHOT_TEMPLATE)
-
-# Save retrieved examples for reproducibility
-pd.DataFrame({"retrieved_document": searched_docs}).to_csv(RETRIEVED_DOCS_PATH)
-
-# Final prompts with retrieved examples
-prompts = create_prompts(queries, searched_docs)
-final_prompt = [PROMPT_TEMPLATE + item for item in prompts]
 
 # -----------------------------
-# Initialize LLM with structured output
+# LLM initialization
 # -----------------------------
-structured_llm = ChatOpenAI(
-    openai_api_key=API_KEY,
-    openai_api_base=API_BASE,
-    model_name=MODEL_NAME,
-    temperature=TEMPERATURE,
-).with_structured_output(Sentiment)
+def create_binding(
+    api_key: str = API_KEY,
+    api_base: str = API_BASE,
+    model_name: str = MODEL_NAME,
+    temperature: float = TEMPERATURE,
+) -> RunnableBinding:
+    """Create an LLM binding with structured sentiment output."""
 
-# -----------------------------
-# Inference + Timing
-# -----------------------------
-print("Starting LLM inference with vector retrieval...")
-start_time = time.time()
-
-for prompt in tqdm(final_prompt):
-    try:
-        response = create_output(structured_llm, prompt)  # generate structured output
-        with open(OUTPUT_JSON_PATH, "a") as f:
-            f.write(json.dumps(response, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print(f"Error occurred while processing prompt:\n{prompt}\nError: {e}")
-
-
-end_time = time.time()
-elapsed = end_time - start_time
-
-# -----------------------------
-# Save timing info
-# -----------------------------
-with open(INFERENCE_TIME_LOG, "w") as f:
-    f.write(
-        f"Total Inference Time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)\n\n"
+    llm = ChatOpenAI(
+        openai_api_key=api_key,
+        openai_api_base=api_base,
+        model_name=model_name,
+        temperature=temperature,
     )
 
-print("LLM inference completed and results saved.")
+    return llm.with_structured_output(Sentiment)
+
+
+# -----------------------------
+# Output parsing
+# -----------------------------
+def parse_output(res):
+    """Parse a structured LLM response or returned exception."""
+
+    try:
+        if isinstance(res, Exception):
+            return {
+                "sentiment": np.nan,
+                "reason": str(res),
+            }
+
+        sentiment = res.sentiment
+
+        if sentiment not in {
+            "negative",
+            "neutral",
+            "positive",
+            "exclude",
+        }:
+            return {
+                "sentiment": np.nan,
+                "reason": f"invalid sentiment: {sentiment}",
+            }
+
+        return {
+            "sentiment": sentiment,
+            "reason": np.nan,
+        }
+
+    except Exception as e:
+        return {
+            "sentiment": np.nan,
+            "reason": str(e),
+        }
+
+
+# -----------------------------
+# Batch inference
+# -----------------------------
+def run_batch_inference(
+    df: pd.DataFrame,
+    structured_llm: RunnableBinding,
+    prompt_col: str = "final_prompt",
+    batch_size: int = BATCH_SIZE,
+    max_concurrency: int = MAX_CONCURRENCY,
+):
+    """Run few-shot LLM inference in batches."""
+
+    outputs = []
+
+    for start in tqdm(
+        range(0, len(df), batch_size),
+        desc="Running batch inference",
+    ):
+        end = start + batch_size
+        batch_df = df.iloc[start:end]
+
+        prompts = batch_df[prompt_col].tolist()
+
+        results = structured_llm.batch(
+            prompts,
+            config={"max_concurrency": max_concurrency},
+            return_exceptions=True,
+        )
+
+        batch_outputs = [parse_output(res) for res in results]
+
+        outputs.extend(batch_outputs)
+
+    return outputs
+
+
+# -----------------------------
+# Load test data and retrieved examples
+# -----------------------------
+# Vector retrieval was performed beforehand using:
+# "Code/Prepare_RetrievedDocuments/Prepare_RetrievedDocument_FromVectorRetriever.py"
+#
+# This script loads the pre-retrieved examples from the generated CSV file.
+
+print("Loading retrieved examples...")
+
+vector_retrieved_docs = pd.read_csv(
+    RETRIEVED_DOCS_PATH,
+)
+
+print("Loading test set...")
+
+df_test = pd.read_json(
+    TEST_JSON_PATH,
+    lines=True,
+)
+
+
+# -----------------------------
+# Align retrieved examples with test instances
+# -----------------------------
+df_test = df_test.reset_index(drop=True)
+vector_retrieved_docs = vector_retrieved_docs.reset_index(drop=True)
+
+df_test["Vector_Example"] = vector_retrieved_docs["retrieved_document"]
+
+
+# -----------------------------
+# Construct inference prompts
+# -----------------------------
+print("Constructing few-shot prompts...")
+
+df_test = df_test.copy()
+
+df_test["input_prompt"] = df_test.apply(
+    build_final_prompt,
+    axis=1,
+)
+
+df_test["final_prompt"] = PROMPT_TEMPLATE + df_test["input_prompt"].astype(str)
+
+
+# -----------------------------
+# Prepare LLM binding
+# -----------------------------
+print("Preparing LLM...")
+
+structured_llm = create_binding()
+
+
+# -----------------------------
+# Run batch inference
+# -----------------------------
+print("Starting batch inference...")
+
+inference_start_time = time.time()
+
+df_test["AI"] = run_batch_inference(
+    df=df_test,
+    structured_llm=structured_llm,
+    prompt_col="final_prompt",
+    batch_size=BATCH_SIZE,
+    max_concurrency=MAX_CONCURRENCY,
+)
+
+inference_end_time = time.time()
+inference_elapsed_time = inference_end_time - inference_start_time
+
+
+# -----------------------------
+# Save inference timing
+# -----------------------------
+with open(
+    INFERENCE_TIME_LOG,
+    "a",
+    encoding="utf-8",
+) as f:
+    f.write(
+        f"Total Inference Time: "
+        f"{inference_elapsed_time:.2f} seconds "
+        f"({inference_elapsed_time / 60:.2f} minutes)\n\n"
+    )
+
+
+# -----------------------------
+# Extract output fields
+# -----------------------------
+df_test["AI_sentiment"] = df_test["AI"].apply(
+    lambda x: (x.get("sentiment") if isinstance(x, dict) else np.nan)
+)
+
+df_test["AI_reason"] = df_test["AI"].apply(
+    lambda x: (x.get("reason") if isinstance(x, dict) else np.nan)
+)
+
+
+# -----------------------------
+# Save inference results
+# -----------------------------
+df_test.to_json(
+    SAVE_JSON_PATH,
+    orient="records",
+    lines=True,
+    force_ascii=False,
+)
+
+print("Few-shot batch inference completed and results saved.")

@@ -1,40 +1,38 @@
 """
-LLM-based inference script with Random Retrieval for Stock TBSA (Target-Based Sentiment Analysis)
+LLM-based few-shot batch inference script with pre-generated random examples
+for Stock TBSA (Target-Based Sentiment Analysis)
 
-This script performs few-shot inference using a large language model (LLM)
-(e.g., Qwen2.5-72B-Instruct) by randomly selecting few-shot examples from a sample pool
-and constructing prompts for sentiment classification.
+This script performs few-shot batch inference using a large language model
+(LLM), such as Qwen2.5-72B-Instruct.
+
+Few-shot examples are randomly selected and prepared beforehand. The generated
+prompts are saved in a JSONL file. This script loads the prepared prompts,
+performs sentiment classification, and saves the predicted labels and total
+inference time.
 """
 
 # -----------------------------
-# Standard library imports
+# Library imports
 # -----------------------------
-import os
 import time
-import json
-import random
-from typing import List
-
-# -----------------------------
-# Third-party imports
-# -----------------------------
+from typing import Literal
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 from tqdm import tqdm
-from enum import Enum, EnumMeta
-from pythainlp.tokenize import word_tokenize
-from langchain.schema import Document
-from langchain_core.pydantic_v1 import BaseModel
+
 from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 
 # -----------------------------
 # Prompt template
 # -----------------------------
-# 🔹NOTE:
-# - This is the 3-shot English prompt with vector retrieval used for inference.
-# - A corresponding Thai version is available at:
-#   `Code/Examples_PromptTemplate/3-shot_LongPrompt_Thai.txt`
+# NOTE:
+# - This is the long English prompt for few-shot inference.
+# - A Thai version is available at: `Code/Prompt_Template/Fewshot_LongPrompt_Thai.txt`
+# - The few-shot examples were randomly selected beforehand.
+# - The model must classify each target stock into one of four classes:
+#   Positive, Negative, Neutral, or Exclude.
 
 PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher in the field of data-centric research.
  
@@ -86,159 +84,223 @@ Annotation rules:
 
 """
 
-# -----------------------------
-# Configuration (replace with your actual paths)
-# -----------------------------
-TEST_PATH = "./path/to/test_set.json"  # <-- Replace with your test set
-FEWSHOT_POOL_PATH = "./path/to/fewshot_pool.json"  # <-- Replace with your few-shot pool (we use Train + Validation set)
-OUTPUT_JSON_PATH = "./path/to/output_predictions.jsonl"
-RANDOM_EXAMPLES_PATH = "./path/to/retrieved_random_examples.csv"
-INFERENCE_TIME_LOG = "./path/to/inference_time.txt"
 
-MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # <-- Can be changed to other LLMs
-API_KEY = "EMPTY"
-API_BASE = "https://your-inference-endpoint.com/v1"
+# -----------------------------
+# Configuration
+# -----------------------------
+# Replace these example values with the paths and server configuration
+# in your environment.
+
+RANDOM_PROMPTS_PATH = "./path/to/random_fewshot_prompts.jsonl"  # Replace with path of retrieved ICL examples
+
+SAVE_JSON_PATH = "./path/to/output_predictions.jsonl"  # Predicion output
+INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # Inference time log
+
+MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # you can change to other LLMs
+API_KEY = "EMPTY"  # Replace with your actual API key
+API_BASE = "http://your-vllm-server:8000/v1"  # Replace with your API base
 TEMPERATURE = 0.0
-TOP_K = 3  # <-- Number of random examples
+
+BATCH_SIZE = 50
+MAX_CONCURRENCY = 8
 
 
-class EnumDirectValueMeta(EnumMeta):
-    def __getattribute__(cls, name):
-        value = super().__getattribute__(name)
-        if isinstance(value, cls):
-            value = value.value
-        return value
-
-
-class SentimentType(Enum, metaclass=EnumDirectValueMeta):
-    NEGATIVE = "negative"
-    NEUTRAL = "neutral"
-    POSITIVE = "positive"
-    EXCLUDE = "exclude"
-
-
+# -----------------------------
+# Structured output schema
+# -----------------------------
 class Sentiment(BaseModel):
-    sentiment: List[SentimentType]
-    # reason: Optional[str] = Field(...)  # Uncomment if reasoning is required
+    sentiment: Literal[
+        "negative",
+        "neutral",
+        "positive",
+        "exclude",
+    ]
 
 
 # -----------------------------
-# Prompt Construction Helpers
+# LLM initialization
 # -----------------------------
-FEW_SHOT_TEMPLATE = """EXAMPLE: {text}
-TICKER: {ticker}
-SENTIMENT_CLASS: {sentiment_class}
-"""
+def create_binding(
+    api_key: str = API_KEY,
+    api_base: str = API_BASE,
+    model_name: str = MODEL_NAME,
+    temperature: float = TEMPERATURE,
+) -> RunnableBinding:
+    """Create an LLM binding with structured sentiment output."""
 
-
-# -----------------------------
-# Few-shot Prompt Construction
-# -----------------------------
-def add_random_examples(
-    df_A: pd.DataFrame, df_B: pd.DataFrame, n: int = 3
-) -> pd.DataFrame:
-    random_examples_list = []
-    for _ in range(len(df_A)):
-        examples = df_B.sample(n=n, random_state=random.randint(0, 10000))
-        examples_dict = [
-            {
-                "text": row["Text"],
-                "ticker": row["TICKER"],
-                "sentiment_class": row["Sentiment_class"],
-            }
-            for _, row in examples.iterrows()
-        ]
-        random_examples_list.append(examples_dict)
-    df_A = df_A.copy()
-    df_A["Random_example"] = random_examples_list
-    return df_A
-
-
-def format_few_shot(examples: List[dict]) -> str:
-    return "\n".join([FEW_SHOT_TEMPLATE.format(**ex) for ex in examples])
-
-
-# -----------------------------
-# Output Inference Wrapper
-# -----------------------------
-def create_output(structured_llm: RunnableBinding, prompt: str) -> dict[str, str]:
-    try:
-        res = structured_llm.invoke(prompt)
-        sentiment = res.sentiment[0].value
-        return dict(sentiment=sentiment, reason=np.nan)
-    except Exception as e:
-        print(f"Error during LLM invocation: {e}")
-        return np.nan
-
-
-# -----------------------------
-# Load Data + Prepare Prompts
-# -----------------------------
-print("Loading and preparing test and few-shot pool...")
-df_test = pd.read_json(TEST_PATH, lines=True)
-df_fewshot = pd.read_json(FEWSHOT_POOL_PATH, lines=True)
-
-# Attach random examples to each row in test set
-df_with_examples = add_random_examples(df_test, df_fewshot, n=TOP_K)
-
-# Format few-shot and input prompts
-df_with_examples["Few_shot_prompt"] = df_with_examples["Random_example"].apply(
-    format_few_shot
-)
-df_with_examples["prompt"] = (
-    "TARGET_ARTICLE: "
-    + df_with_examples["Text"]
-    + "\n"
-    + "TICKER: "
-    + df_with_examples["TICKER"]
-    + "\n"
-    + "SENTIMENT_CLASS: "
-)
-df_with_examples["Input_Prompt"] = (
-    df_with_examples["Few_shot_prompt"] + "\n" + df_with_examples["prompt"]
-)
-
-# Save retrieved examples (optional)
-df_with_examples.to_csv(RANDOM_EXAMPLES_PATH, index=False)
-
-# Construct final prompt
-final_prompt = [
-    PROMPT_TEMPLATE + item for item in df_with_examples["Input_Prompt"].tolist()
-]
-
-# -----------------------------
-# Initialize LLM
-# -----------------------------
-structured_llm = ChatOpenAI(
-    openai_api_key=API_KEY,
-    openai_api_base=API_BASE,
-    model_name=MODEL_NAME,
-    temperature=TEMPERATURE,
-).with_structured_output(Sentiment)
-
-# -----------------------------
-# Inference + Save
-# -----------------------------
-print("Starting LLM inference with random few-shot prompts...")
-start_time = time.time()
-
-for prompt in tqdm(final_prompt):
-    try:
-        response = create_output(structured_llm, prompt)
-        with open(OUTPUT_JSON_PATH, "a") as f:
-            f.write(json.dumps(response, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print(f"Error occurred while processing prompt:\n{prompt}\nError details: {e}")
-
-end_time = time.time()
-elapsed = end_time - start_time
-
-# -----------------------------
-# Log inference time
-# -----------------------------
-with open(INFERENCE_TIME_LOG, "w") as f:
-    f.write(
-        f"Total Random_Retrieval Inference Time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)\n\n"
+    llm = ChatOpenAI(
+        openai_api_key=api_key,
+        openai_api_base=api_base,
+        model_name=model_name,
+        temperature=temperature,
     )
 
-print("LLM inference completed and results saved.")
+    return llm.with_structured_output(Sentiment)
+
+
+# -----------------------------
+# Output parsing
+# -----------------------------
+def parse_output(res):
+    """Parse a structured LLM response or returned exception."""
+
+    try:
+        if isinstance(res, Exception):
+            return {
+                "sentiment": np.nan,
+                "reason": str(res),
+            }
+
+        sentiment = res.sentiment
+
+        if sentiment not in {
+            "negative",
+            "neutral",
+            "positive",
+            "exclude",
+        }:
+            return {
+                "sentiment": np.nan,
+                "reason": f"invalid sentiment: {sentiment}",
+            }
+
+        return {
+            "sentiment": sentiment,
+            "reason": np.nan,
+        }
+
+    except Exception as e:
+        return {
+            "sentiment": np.nan,
+            "reason": str(e),
+        }
+
+
+# -----------------------------
+# Batch inference
+# -----------------------------
+def run_batch_inference(
+    df: pd.DataFrame,
+    structured_llm: RunnableBinding,
+    prompt_col: str = "final_prompt",
+    batch_size: int = BATCH_SIZE,
+    max_concurrency: int = MAX_CONCURRENCY,
+):
+    """Run few-shot LLM inference in batches."""
+
+    outputs = []
+
+    for start in tqdm(
+        range(0, len(df), batch_size),
+        desc="Running batch inference",
+    ):
+        end = start + batch_size
+        batch_df = df.iloc[start:end]
+
+        prompts = batch_df[prompt_col].tolist()
+
+        results = structured_llm.batch(
+            prompts,
+            config={"max_concurrency": max_concurrency},
+            return_exceptions=True,
+        )
+
+        batch_outputs = [parse_output(res) for res in results]
+
+        outputs.extend(batch_outputs)
+
+    return outputs
+
+
+# -----------------------------
+# Load pre-generated random prompts
+# -----------------------------
+# Random example selection and prompt preparation were performed beforehand.
+# "Code/Prepare_RetrievedDocuments/Prepare_RetrievedDocument_FromRandomRetriever.py"
+#
+# This script loads the generated JSONL file, which already contains the
+# randomly selected few-shot examples and target instances in "input_prompt".
+
+print("Loading pre-generated random few-shot prompts...")
+
+df_retrieved_docs = pd.read_json(
+    RANDOM_PROMPTS_PATH,
+    lines=True,
+)
+
+
+# -----------------------------
+# Construct inference prompts
+# -----------------------------
+print("Constructing few-shot prompts...")
+
+df_retrieved_docs["final_prompt"] = PROMPT_TEMPLATE + df_retrieved_docs[
+    "input_prompt"
+].astype(str)
+
+
+# -----------------------------
+# Prepare LLM binding
+# -----------------------------
+print("Preparing LLM...")
+
+structured_llm = create_binding()
+
+
+# -----------------------------
+# Run batch inference
+# -----------------------------
+print("Starting batch inference...")
+
+inference_start_time = time.time()
+
+df_retrieved_docs["AI"] = run_batch_inference(
+    df=df_retrieved_docs,
+    structured_llm=structured_llm,
+    prompt_col="final_prompt",
+    batch_size=BATCH_SIZE,
+    max_concurrency=MAX_CONCURRENCY,
+)
+
+inference_end_time = time.time()
+inference_elapsed_time = inference_end_time - inference_start_time
+
+
+# -----------------------------
+# Save inference timing
+# -----------------------------
+with open(
+    INFERENCE_TIME_LOG,
+    "a",
+    encoding="utf-8",
+) as f:
+    f.write(
+        f"Total Inference Time: "
+        f"{inference_elapsed_time:.2f} seconds "
+        f"({inference_elapsed_time / 60:.2f} minutes)\n\n"
+    )
+
+
+# -----------------------------
+# Extract output fields
+# -----------------------------
+df_retrieved_docs["AI_sentiment"] = df_retrieved_docs["AI"].apply(
+    lambda x: (x.get("sentiment") if isinstance(x, dict) else np.nan)
+)
+
+df_retrieved_docs["AI_reason"] = df_retrieved_docs["AI"].apply(
+    lambda x: (x.get("reason") if isinstance(x, dict) else np.nan)
+)
+
+
+# -----------------------------
+# Save inference results
+# -----------------------------
+df_retrieved_docs.to_json(
+    SAVE_JSON_PATH,
+    orient="records",
+    lines=True,
+    force_ascii=False,
+)
+
+print("Random few-shot batch inference completed and results saved.")
