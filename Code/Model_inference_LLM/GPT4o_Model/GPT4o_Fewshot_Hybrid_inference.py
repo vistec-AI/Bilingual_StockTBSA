@@ -1,33 +1,27 @@
 """
-LLM-based few-shot batch inference script with pre-retrieved BM25 examples
-for Stock TBSA (Target-Based Sentiment Analysis)
+LLM-based zero-shot inference script for Stock TBSA
+(Target-Based Sentiment Analysis)
 
 This script performs zero-shot inference using GPT-4o on a Stock TBSA
 test set.
 
-Similar examples are retrieved beforehand using BM25 and saved in a CSV file.
-The script combines these examples with each target article, performs
-sentiment classification, and saves the predicted labels and total
-inference time.
+The script processes each test instance sequentially and outputs
+predicted sentiment labels.
 """
 
 # -----------------------------
 # Library imports
 # -----------------------------
+import ast
 import json
 import time
-from enum import Enum, EnumMeta
-from typing import List
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from pythainlp.tokenize import word_tokenize
-
-from langchain.schema import Document
-from langchain_community.retrievers import BM25Retriever
 from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 
@@ -37,9 +31,10 @@ from langchain_openai import ChatOpenAI
 # NOTE:
 # - This is the long English prompt for few-shot inference.
 # - A Thai version is available at: `Code/Prompt_Template/Zeroshot_LongPrompt_Thai.txt`
-# - The few-shot examples were retrieved beforehand using BM25 .
+# - The few-shot examples were retrieved beforehand using a hybrid retriever.
 # - The model must classify each target stock into one of four classes:
 #   Positive, Negative, Neutral, or Exclude.
+
 
 PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher in the field of data-centric research.
  
@@ -97,73 +92,118 @@ Annotation rules:
 # -----------------------------
 # Replace these example paths with the paths in your environment.
 
-RETRIEVAL_DATASET_PATH = (
-    "./path/to/retrieval_dataset.json"  # Dataset used to build BM25 retriever
-)
-TEST_JSON_PATH = "./path/to/test_data.json"  # Test set
-
-RETRIEVED_DOCS_PATH = "./path/to/bm25_retrieved_documents.csv"  # Retrieved ICL examples
+RETRIEVED_DOCS_PATH = "./path/to/hybrid_retrieved_documents.csv"  # Replace with path of retrieved ICL examples
 SAVE_JSON_PATH = "./path/to/output_predictions.jsonl"  # Prediction output
 INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # Inference time log
-
 MODEL_NAME = "gpt-4o-2024-08-06"
 API_KEY = "YOUR_API_KEY"  # Replace with your actual API key
 
 TEMPERATURE = 0.0
 
-BM25_K = 3
+SHOT_K = 3
 
 
 # -----------------------------
-# Few-shot example template
+# Prompt construction helpers
 # -----------------------------
-FEW_SHOT_TEMPLATE = """EXAMPLE: {text}
-TICKER: {ticker}
-SENTIMENT_CLASS: {sentiment_class}
-"""
+def to_list_if_string(value):
+    """Convert a stored list representation into a Python list."""
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, str):
+        try:
+            return ast.literal_eval(value)
+        except Exception:
+            return [value]
+
+    return []
+
+
+def build_final_prompt(
+    row,
+    retrieved_col: str = "retrieved_document",
+    query_col: str = "queries",
+    shot_k: int = SHOT_K,
+):
+    """
+    Combine the retrieved few-shot examples with the target TBSA instance.
+
+    Only the first `shot_k` retrieved examples are used.
+    """
+
+    retrieved_docs = to_list_if_string(row[retrieved_col])
+
+    # Use only the first three retrieved examples for 3-shot inference.
+    retrieved_docs = retrieved_docs[:shot_k]
+
+    examples_text = "\n".join(str(example).strip() for example in retrieved_docs)
+
+    query_text = str(row[query_col]).strip()
+
+    return PROMPT_TEMPLATE + examples_text + "\n" + query_text
 
 
 # -----------------------------
 # Structured output schema
 # -----------------------------
-class EnumDirectValueMeta(EnumMeta):
-    def __getattribute__(cls, name):
-        value = super().__getattribute__(name)
-
-        if isinstance(value, cls):
-            value = value.value
-
-        return value
-
-
-class SentimentType(Enum, metaclass=EnumDirectValueMeta):
-    NEGATIVE = "negative"
-    NEUTRAL = "neutral"
-    POSITIVE = "positive"
-    EXCLUDE = "exclude"
-
-
 class Sentiment(BaseModel):
-    sentiment: List[SentimentType]
+    sentiment: Literal[
+        "negative",
+        "neutral",
+        "positive",
+        "exclude",
+    ]
 
 
 # -----------------------------
-# Output generation
+# LLM initialization
+# -----------------------------
+def create_binding(
+    api_key: str = API_KEY,
+    model_name: str = MODEL_NAME,
+    temperature: float = TEMPERATURE,
+) -> RunnableBinding:
+    """Create an LLM binding with structured sentiment output."""
+
+    llm = ChatOpenAI(
+        openai_api_key=api_key,
+        model_name=model_name,
+        temperature=temperature,
+    )
+
+    return llm.with_structured_output(Sentiment)
+
+
+# -----------------------------
+# Output parsing
 # -----------------------------
 def create_output(
     structured_llm: RunnableBinding,
     prompt: str,
-) -> dict[str, str]:
+):
     """
-    Generate a structured sentiment prediction for one prompt.
+    Run one prompt through the LLM and return the predicted sentiment.
 
-    The original implementation uses .invoke() one prompt at a time.
+    Inference is performed sequentially, one prompt at a time.
     """
 
     try:
-        res = structured_llm.invoke(prompt)
+        response = structured_llm.invoke(prompt)
 
-        sentiment = res.sentiment[0].value
+        sentiment = response.sentiment
+
+        if sentiment not in {
+            "negative",
+            "neutral",
+            "positive",
+            "exclude",
+        }:
+            return {
+                "sentiment": np.nan,
+                "reason": f"invalid sentiment: {sentiment}",
+            }
 
         return {
             "sentiment": sentiment,
@@ -171,270 +211,78 @@ def create_output(
         }
 
     except Exception as e:
-        print(e)
-        return np.nan
+        print("LLM error:", e)
+
+        return {
+            "sentiment": np.nan,
+            "reason": np.nan,
+            "error": str(e),
+        }
 
 
 # -----------------------------
-# BM25 document preparation
+# Load pre-retrieved hybrid examples
 # -----------------------------
-def create_documents(df: pd.DataFrame):
-    """
-    Convert the retrieval dataset into LangChain Documents
-    for BM25 retrieval.
-    """
+# Hybrid retrieval was performed beforehand, and the retrieved examples
+# were saved in a CSV file.
+#
+# This script loads the pre-retrieved examples from the generated CSV file
+# and does not run the hybrid retrieval process again.
 
-    documents = []
+print("Loading hybrid-retrieved examples...")
 
-    for _, row in df.iterrows():
-
-        doc = Document(
-            page_content=row["Text"],
-            metadata={
-                "ticker": str(row["TICKER"]),
-                "data-source": str(row["Data-Source"]),
-                "date": str(row["Date"]),
-                "year": str(row["Year"]),
-                "sentiment-class": str(row["Sentiment_class"]),
-            },
-            id=str(row["Article_ID"]),
-        )
-
-        documents.append(doc)
-
-    return documents
+retrieve_df = pd.read_csv(
+    RETRIEVED_DOCS_PATH,
+)
 
 
-def prepare_queries(file_path: str) -> list[str]:
-    """
-    Prepare target queries from the test dataset.
-    """
+# -----------------------------
+# Construct inference prompts
+# -----------------------------
+print("Constructing few-shot prompts...")
 
-    test_dataset = pd.read_json(
-        file_path,
-        lines=True,
+final_prompts = [
+    build_final_prompt(
+        row=row,
+        retrieved_col="retrieved_document",
+        query_col="queries",
+        shot_k=SHOT_K,
     )
-
-    df = pd.concat(
-        [test_dataset],
-        ignore_index=True,
+    for _, row in tqdm(
+        retrieve_df.iterrows(),
+        total=len(retrieve_df),
+        desc="Constructing prompts",
     )
-
-    df["queries"] = (
-        "TARGET_ARTICLE: "
-        + df["Text"].astype(str)
-        + "\n"
-        + "TICKER: "
-        + df["TICKER"].astype(str)
-        + "\n"
-        + "SENTIMENT_CLASS: "
-    )
-
-    return df["queries"].tolist()
+]
 
 
 # -----------------------------
-# BM25 retrieval
+# Prepare LLM binding
 # -----------------------------
-def process_documents(
-    queries: List[str],
-    retriever: BM25Retriever,
-    template: str,
-):
-    """
-    Retrieve BM25 examples for each target query
-    and convert them into the few-shot format.
-    """
+print("Preparing GPT-4o...")
 
-    searched_docs = [
-        retriever.invoke(query)
-        for query in tqdm(
-            queries,
-            desc="Retrieving BM25 examples",
-        )
-    ]
-
-    documents = []
-
-    for docs in tqdm(
-        searched_docs,
-        desc="Formatting retrieved examples",
-    ):
-
-        sub_documents = [
-            template.format(
-                text=doc.page_content,
-                ticker=doc.metadata["ticker"],
-                sentiment_class=doc.metadata["sentiment-class"],
-            )
-            for doc in docs
-        ]
-
-        documents.append(sub_documents)
-
-    return documents
+structured_llm = create_binding()
 
 
-def create_prompts(
-    queries: List[str],
-    searched_docs: List[List[str]],
-):
-    """
-    Combine retrieved examples with target queries.
+print("Starting sequential inference...")
 
-    The prompt construction is kept identical to the
-    original GPT-4o implementation.
-    """
+inference_start_time = time.time()
 
-    prompts = []
-
-    for i, doc in enumerate(
-        tqdm(
-            searched_docs,
-            desc="Constructing prompts",
-        )
-    ):
-
-        docs_text = "\n".join(d for d in doc)
-
-        prompts.append(docs_text + "\n" + queries[i])
-
-    return prompts
-
-
-# -----------------------------
-# Load retrieval dataset
-# -----------------------------
-print("Loading BM25 retrieval dataset...")
-
-df = pd.read_json(
-    RETRIEVAL_DATASET_PATH,
-    lines=True,
-)
-
-documents = create_documents(df)
-
-
-# -----------------------------
-# Prepare target queries
-# -----------------------------
-print("Preparing test queries...")
-
-retrieval_start_time = time.time()
-
-queries = prepare_queries(
-    TEST_JSON_PATH,
-)
-
-
-# -----------------------------
-# Initialize BM25 retriever
-# -----------------------------
-print("Preparing BM25 retriever...")
-
-retriever = BM25Retriever.from_documents(
-    documents,
-    k=BM25_K,
-    preprocess_func=word_tokenize,
-)
-
-
-# -----------------------------
-# Retrieve few-shot examples
-# -----------------------------
-print("Starting BM25 retrieval...")
-
-searched_docs = process_documents(
-    queries,
-    retriever,
-    FEW_SHOT_TEMPLATE,
-)
-
-
-retrieval_end_time = time.time()
-
-retrieval_elapsed_time = retrieval_end_time - retrieval_start_time
-
-
-# -----------------------------
-# Save retrieval timing
-# -----------------------------
 with open(
-    INFERENCE_TIME_LOG,
+    SAVE_JSON_PATH,
     "w",
     encoding="utf-8",
 ) as f:
 
-    f.write(
-        f"Total Retrieve_BM25 Time: "
-        f"{retrieval_elapsed_time:.2f} seconds "
-        f"({retrieval_elapsed_time / 60:.2f} minutes)\n\n"
-    )
-
-
-# -----------------------------
-# Save retrieved documents
-# -----------------------------
-retrieve_df = pd.DataFrame({"retrieved_document": searched_docs})
-
-retrieve_df.to_csv(
-    RETRIEVED_DOCS_PATH,
-    index=False,
-)
-
-
-print(f"BM25 retrieval completed: " f"{retrieval_elapsed_time:.2f} seconds")
-
-
-# -----------------------------
-# Construct few-shot prompts
-# -----------------------------
-print("Constructing few-shot prompts...")
-
-prompts = create_prompts(
-    queries,
-    searched_docs,
-)
-
-final_prompt = [PROMPT_TEMPLATE + item for item in prompts]
-
-
-# -----------------------------
-# Initialize GPT-4o
-# -----------------------------
-print("Preparing GPT-4o...")
-
-llm = ChatOpenAI(
-    openai_api_key=API_KEY,
-    model_name=MODEL_NAME,
-    temperature=TEMPERATURE,
-).with_structured_output(Sentiment)
-
-
-# -----------------------------
-# Run inference
-# -----------------------------
-print("Starting inference...")
-
-inference_start_time = time.time()
-
-for prompt in tqdm(
-    final_prompt,
-    desc="Running GPT-4o inference",
-):
-
-    try:
-
-        response = create_output(
-            llm,
-            prompt,
-        )
-
-        with open(
-            SAVE_JSON_PATH,
-            "a",
-            encoding="utf-8",
-        ) as f:
+    for prompt in tqdm(
+        final_prompts,
+        desc="Running LLM inference",
+    ):
+        try:
+            response = create_output(
+                structured_llm,
+                prompt,
+            )
 
             f.write(
                 json.dumps(
@@ -444,24 +292,22 @@ for prompt in tqdm(
                 + "\n"
             )
 
-    except Exception as e:
-
-        print(f"Error occurred while processing prompt: " f"{prompt}")
-
-        print(f"Error details: {e}")
+        except Exception as e:
+            print(f"Error occurred while processing prompt: {prompt}")
+            print(f"Error details: {e}")
 
 
-# -----------------------------
-# Save inference timing
-# -----------------------------
 inference_end_time = time.time()
 
 inference_elapsed_time = inference_end_time - inference_start_time
 
 
+# -----------------------------
+# Save inference timing
+# -----------------------------
 with open(
     INFERENCE_TIME_LOG,
-    "a",
+    "w",
     encoding="utf-8",
 ) as f:
 
@@ -471,8 +317,7 @@ with open(
         f"({inference_elapsed_time / 60:.2f} minutes)\n\n"
     )
 
-
 # -----------------------------
 # Finish
 # -----------------------------
-print("GPT-4o BM25 few-shot inference " "completed and results saved.")
+print("Hybrid few-shot sequential inference " "completed and results saved.")

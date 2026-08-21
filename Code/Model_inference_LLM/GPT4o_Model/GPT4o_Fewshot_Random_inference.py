@@ -1,38 +1,41 @@
 """
-LLM-based inference script with Random Retrieval for Stock TBSA (Target-Based Sentiment Analysis)
+LLM-based zero-shot inference script for Stock TBSA
+(Target-Based Sentiment Analysis)
 
-This script performs few-shot inference using a large language model (LLM)
-(e.g., GPT-4o) by randomly selecting few-shot examples from a sample pool
-and constructing prompts for sentiment classification.
+This script performs zero-shot inference using GPT-4o on a Stock TBSA
+test set.
+
+Few-shot examples are randomly selected and prepared beforehand. The generated
+prompts are saved in a JSONL file. This script loads the prepared prompts,
+performs sentiment classification, and saves the predicted labels and total
+inference time.
 """
 
 # -----------------------------
-# Standard library imports
+# Library imports
 # -----------------------------
-import os
-import time
 import json
-import random
+import time
+from enum import Enum, EnumMeta
 from typing import List
 
-# -----------------------------
-# Third-party imports
-# -----------------------------
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 from tqdm import tqdm
-from enum import Enum, EnumMeta
-from langchain_core.pydantic_v1 import BaseModel
-from langchain_core.runnables import RunnableBinding
+
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableBinding
 
 # -----------------------------
 # Prompt template
 # -----------------------------
-# 🔹NOTE:
-# - This is the 3-shot English prompt with vector retrieval used for inference.
-# - A corresponding Thai version is available at:
-#   `Code/Examples_PromptTemplate/3-shot_LongPrompt_Thai.txt`
+# NOTE:
+# - This is the long English prompt for few-shot inference.
+# - A Thai version is available at: `Code/Prompt_Template/Zeroshot_LongPrompt_Thai.txt`
+# - The few-shot examples were retrieved beforehand using BM25 .
+# - The model must classify each target stock into one of four classes:
+#   Positive, Negative, Neutral, or Exclude.
 
 PROMPT_TEMPLATE = """I want you to act as a financial expert and NLP researcher in the field of data-centric research.
  
@@ -84,26 +87,31 @@ Annotation rules:
 
 """
 
-# -----------------------------
-# Configuration (replace with your actual paths)
-# -----------------------------
-TEST_PATH = "./path/to/test_set.json"
-FEWSHOT_POOL_PATH = "./path/to/fewshot_pool.json"
-OUTPUT_JSON_PATH = "./path/to/output_predictions.jsonl"
-RANDOM_EXAMPLES_PATH = "./path/to/retrieved_random_examples.csv"
-INFERENCE_TIME_LOG = "./path/to/inference_time.txt"
 
+# -----------------------------
+# Configuration
+# -----------------------------
+# Replace these example paths with the paths in your environment.
+
+RANDOM_PROMPTS_PATH = "./path/to/random_fewshot_prompts.jsonl"  # Replace with path of retrieved ICL examples
+SAVE_JSON_PATH = "./path/to/output_predictions.jsonl"  # Predicion output
+INFERENCE_TIME_LOG = "./path/to/inference_timing.txt"  # Inference time log
 MODEL_NAME = "gpt-4o-2024-08-06"
-API_KEY = "EMPTY"  # <-- Replace with your actual API key
+API_KEY = "YOUR_API_KEY"  # Replace with your actual API key
+
 TEMPERATURE = 0.0
-TOP_K = 3
 
 
+# -----------------------------
+# Structured output schema
+# -----------------------------
 class EnumDirectValueMeta(EnumMeta):
     def __getattribute__(cls, name):
         value = super().__getattribute__(name)
+
         if isinstance(value, cls):
             value = value.value
+
         return value
 
 
@@ -116,125 +124,148 @@ class SentimentType(Enum, metaclass=EnumDirectValueMeta):
 
 class Sentiment(BaseModel):
     sentiment: List[SentimentType]
-    # reason: Optional[str] = Field(...)  # Uncomment if reasoning is required
 
 
 # -----------------------------
-# Prompt Construction Helpers
+# LLM initialization
 # -----------------------------
-FEW_SHOT_TEMPLATE = """EXAMPLE: {text}
-TICKER: {ticker}
-SENTIMENT_CLASS: {sentiment_class}
-"""
+def create_binding(
+    api_key: str = API_KEY,
+    model_name: str = MODEL_NAME,
+    temperature: float = TEMPERATURE,
+) -> RunnableBinding:
+    """Create an LLM binding with structured sentiment output."""
 
+    llm = ChatOpenAI(
+        openai_api_key=api_key,
+        model_name=model_name,
+        temperature=temperature,
+    )
 
-# -----------------------------
-# Few-shot Prompt Construction
-# -----------------------------
-def add_random_examples(
-    df_A: pd.DataFrame, df_B: pd.DataFrame, n: int = 3
-) -> pd.DataFrame:
-    random_examples_list = []
-    for _ in range(len(df_A)):
-        examples = df_B.sample(n=n, random_state=random.randint(0, 10000))
-        examples_dict = [
-            {
-                "text": row["Text"],
-                "ticker": row["TICKER"],
-                "sentiment_class": row["Sentiment_class"],
-            }
-            for _, row in examples.iterrows()
-        ]
-        random_examples_list.append(examples_dict)
-    df_A = df_A.copy()
-    df_A["Random_example"] = random_examples_list
-    return df_A
-
-
-def format_few_shot(examples: List[dict]) -> str:
-    return "\n".join([FEW_SHOT_TEMPLATE.format(**ex) for ex in examples])
+    return llm.with_structured_output(Sentiment)
 
 
 # -----------------------------
-# Output Inference Wrapper
+# Output generation
 # -----------------------------
-def create_output(structured_llm: RunnableBinding, prompt: str) -> dict[str, str]:
+def create_output(
+    structured_llm: RunnableBinding,
+    prompt: str,
+) -> dict[str, str]:
+    """
+    Run one prompt and return the predicted sentiment.
+
+    Inference is intentionally performed one row at a time
+    to preserve the original experimental procedure.
+    """
+
     try:
         res = structured_llm.invoke(prompt)
+
         sentiment = res.sentiment[0].value
-        return dict(sentiment=sentiment, reason=np.nan)
+
+        return dict(
+            sentiment=sentiment,
+        )
+
     except Exception as e:
-        print(f"Error during LLM invocation: {e}")
+        print(e)
+
         return np.nan
 
 
 # -----------------------------
-# Load Data + Prepare Prompts
+# Load pre-generated random prompts
 # -----------------------------
-print("Loading and preparing test and few-shot pool...")
-df_test = pd.read_json(TEST_PATH, lines=True)
-df_fewshot = pd.read_json(FEWSHOT_POOL_PATH, lines=True)
+# Random example selection and prompt preparation were performed beforehand.
+#
+# This script loads the generated CSV file, which contains the prepared
+# few-shot prompts in the "input_prompt" column.
 
-# Attach random examples to each row in test set
-df_with_examples = add_random_examples(df_test, df_fewshot, n=TOP_K)
+print("Loading pre-generated random few-shot prompts...")
 
-# Format few-shot and input prompts
-df_with_examples["Few_shot_prompt"] = df_with_examples["Random_example"].apply(
-    format_few_shot
-)
-df_with_examples["prompt"] = (
-    "TARGET_ARTICLE: "
-    + df_with_examples["Text"]
-    + "\n"
-    + "TICKER: "
-    + df_with_examples["TICKER"]
-    + "\n"
-    + "SENTIMENT_CLASS: "
-)
-df_with_examples["Input_Prompt"] = (
-    df_with_examples["Few_shot_prompt"] + "\n" + df_with_examples["prompt"]
+df_retrieved_docs = pd.read_csv(
+    RANDOM_PROMPTS_PATH,
 )
 
-# Save retrieved examples (optional)
-df_with_examples.to_csv(RANDOM_EXAMPLES_PATH, index=False)
-
-# Construct final prompt
-final_prompt = [
-    PROMPT_TEMPLATE + item for item in df_with_examples["Input_Prompt"].tolist()
-]
 
 # -----------------------------
-# Initialize LLM
+# Construct inference prompts
 # -----------------------------
-structured_llm = ChatOpenAI(
-    openai_api_key=API_KEY,
-    model_name=MODEL_NAME,
-    temperature=TEMPERATURE,
-).with_structured_output(Sentiment)
+print("Constructing few-shot prompts...")
+
+prompts = df_retrieved_docs["input_prompt"].tolist()
+
+final_prompt = [PROMPT_TEMPLATE + item for item in prompts]
+
 
 # -----------------------------
-# Inference + Save
+# Prepare LLM binding
 # -----------------------------
-print("Starting LLM inference with random few-shot prompts...")
-start_time = time.time()
+print("Preparing GPT-4o...")
 
-for prompt in tqdm(final_prompt):
+structured_llm = create_binding()
+
+
+# -----------------------------
+# Run inference
+# -----------------------------
+# NOTE:
+# Inference is performed one prompt at a time.
+# This intentionally does NOT use batch inference.
+
+print("Starting inference...")
+
+inference_start_time = time.time()
+
+for prompt in tqdm(
+    final_prompt,
+    desc="Running inference",
+):
     try:
-        response = create_output(structured_llm, prompt)
-        with open(OUTPUT_JSON_PATH, "a") as f:
-            f.write(json.dumps(response, ensure_ascii=False) + "\n")
+        response = create_output(
+            structured_llm,
+            prompt,
+        )
+
+        with open(
+            SAVE_JSON_PATH,
+            "a",
+            encoding="utf-8",
+        ) as f:
+            f.write(
+                json.dumps(
+                    response,
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
     except Exception as e:
-        print(f"Error occurred while processing prompt:\n{prompt}\nError details: {e}")
+        print(f"Error occurred while processing prompt: {prompt}")
+        print(f"Error details: {e}")
 
-end_time = time.time()
-elapsed = end_time - start_time
 
 # -----------------------------
-# Log inference time
+# Save inference timing
 # -----------------------------
-with open(INFERENCE_TIME_LOG, "w") as f:
+inference_end_time = time.time()
+
+inference_elapsed_time = inference_end_time - inference_start_time
+
+with open(
+    INFERENCE_TIME_LOG,
+    "a",
+    encoding="utf-8",
+) as f:
     f.write(
-        f"Total Random_Retrieval Inference Time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)\n\n"
+        f"Total Inference Time: "
+        f"{inference_elapsed_time:.2f} seconds "
+        f"({inference_elapsed_time / 60:.2f} minutes)\n\n"
     )
 
-print("LLM inference completed and results saved.")
+
+# -----------------------------
+# Finish
+# -----------------------------
+print("GPT-4o random few-shot inference " "completed and results saved.")
